@@ -1,0 +1,9 @@
+- insert:
+    - id: telegram-bot
+      name: '@local/dsh-telegram'
+      config:
+        botToken: '${TELEGRAM_BOT_TOKEN}'
+        mode: webhook
+        allowedChatIds: []
+        webhookSecret: ''
+        maxFileSize: 10485760

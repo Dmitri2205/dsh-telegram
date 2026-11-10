@@ -1,0 +1,32 @@
+{
+  "name": "@local/dsh-telegram",
+  "version": "0.1.0",
+  "description": "DeepSeek Harness plugin: connect agent to Telegram bot",
+  "type": "module",
+  "main": "./lib/src/server/index.js",
+  "types": "./lib/src/server/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/src/server/index.d.ts",
+      "default": "./lib/src/server/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "cordis.patch.yml"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "/home/dmitry/deepseek-harness/node_modules/.bin/tsx --test test/**/*.test.ts",
+    "prepublishOnly": "npm run build"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.43",
+    "typescript": "^5.9.3"
+  }
+}
