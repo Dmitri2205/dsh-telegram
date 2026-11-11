@@ -272,6 +272,7 @@ export function apply(
     webServer: WebServer;
     agents: Agents;
     credentials?: Credentials;
+    on?: (event: "session/event", handler: (session: { id: string }, event: unknown) => void) => () => void;
     logger?: { info(msg: string): void; error(msg: string): void; warn(msg: string): void; debug(msg: string): void };
   },
   config: TelegramConfig = {},
@@ -373,7 +374,19 @@ export function apply(
   const router = createRouter(bot, {
     agents: ctx.agents,
     logger,
+    cwd: process.cwd(),
   });
+
+  // Durable session events are how the assistant's answer reaches us: the loop
+  // commits `assistant/message` events, and `router.handleSessionEvent` collects
+  // their text for whichever chat is currently waiting on that session.
+  if (ctx.on) {
+    disposers.push(ctx.on("session/event", (session, event) => {
+      router.handleSessionEvent(session.id, event as { type?: string; data?: { message?: { content?: Array<{ type?: string; text?: string }> } } });
+    }));
+  }
+
+  disposers.push(() => { void router.dispose(); });
 
   // 4. Create webhook handler
   // Telegram rejects a secret_token with characters outside [A-Za-z0-9_-], and a bot

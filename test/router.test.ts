@@ -22,6 +22,7 @@ test("Router", async () => {
       error: (msg: string) => console.log("ERROR:", msg),
     };
     const router = createRouter(mockBot, ctx as any);
+    ctx.agents.eventSink = (sessionId: string, event: any) => router.handleSessionEvent(sessionId, event);
 
     await router.routeMessage(12345, { text: "Hello!" });
 
@@ -41,6 +42,7 @@ test("Router", async () => {
       error: (msg: string) => console.log("ERROR:", msg),
     };
     const router = createRouter(mockBot, ctx as any);
+    ctx.agents.eventSink = (sessionId: string, event: any) => router.handleSessionEvent(sessionId, event);
 
     await router.routeMessage(12345, { text: "First" });
     const createdCount1 = ctx.agents.created.length;
@@ -63,6 +65,7 @@ test("Router", async () => {
       error: (msg: string) => console.log("ERROR:", msg),
     };
     const router = createRouter(mockBot, ctx as any);
+    ctx.agents.eventSink = (sessionId: string, event: any) => router.handleSessionEvent(sessionId, event);
 
     await router.routeMessage(12345, { text: "First" });
     assert.ok(ctx.agents.created.length > 0);
@@ -82,6 +85,7 @@ test("Router", async () => {
       error: (msg: string) => console.log("ERROR:", msg),
     };
     const router = createRouter(mockBot, ctx as any);
+    ctx.agents.eventSink = (sessionId: string, event: any) => router.handleSessionEvent(sessionId, event);
 
     const sessions = router.listSessions();
     assert.ok(Array.isArray(sessions));
@@ -101,6 +105,7 @@ test("Router", async () => {
     };
 
     const brokenRouter = createRouter(mockBot, brokenCtx as any);
+    brokenCtx.agents.eventSink = (sessionId: string, event: any) => brokenRouter.handleSessionEvent(sessionId, event);
     await brokenRouter.routeMessage(12345, { text: "Hello!" });
 
     assert.strictEqual(messages.length, 1);

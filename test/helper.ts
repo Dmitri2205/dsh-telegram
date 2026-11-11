@@ -4,48 +4,49 @@ import assert from "node:assert/strict";
 
 export function createFakeContext() {
   const routes = new Map<string, any>();
-  const createdSessions = new Map<string, { sessionId: string; submitCalls: any[] }>();
-  const resumedSessions = new Map<string, { sessionId: string; submitCalls: any[] }>();
+  const createdSessions = new Map<string, { sessionId: string; followupCalls: any[]; disposed: number }>();
+  const resumedSessions = new Map<string, { sessionId: string; followupCalls: any[]; disposed: number }>();
 
-  let nextSessionId = 1;
-
+  /**
+   * Fake `ctx.agents`. The real service is identity-driven: the caller supplies
+   * the session id and drives the agent with `followup()` / `whenIdle()`, and the
+   * assistant answer arrives as a durable `session/event`. Tests wire the event
+   * back into the router through `agents.eventSink`.
+   */
   const agents = {
     created: [] as any[],
     resumed: [] as any[],
-    create: async (opts: any) => {
-      const sessionId = `session-${nextSessionId++}`;
-      const handle = {
-        id: sessionId,
-        submit: async (msg: any) => {
-          const entry = createdSessions.get(sessionId) || { sessionId, submitCalls: [] };
-          entry.submitCalls.push(msg);
-          createdSessions.set(sessionId, entry);
-          return { text: "test response" };
-        },
-      };
-      createdSessions.set(sessionId, { sessionId, submitCalls: [] });
-      agents.created.push({ opts, handle });
-      return handle;
-    },
-    resume: async (opts: any) => {
-      const sessionId = opts.sessionId;
-      const handle = {
-        id: sessionId,
-        submit: async (msg: any) => {
-          const entry = resumedSessions.get(sessionId) || { sessionId, submitCalls: [] as any[] };
-          entry.submitCalls.push(msg);
-          resumedSessions.set(sessionId, entry);
-          agents.resumed.push({ opts, handle });
-          return { text: "test response" };
-        },
-      };
-      resumedSessions.set(sessionId, { sessionId, submitCalls: [] });
-      return handle;
-    },
-    list: () => agents.created,
-    roots: () => [],
+    eventSink: undefined as ((sessionId: string, event: any) => void) | undefined,
+    reply: "test response",
+    create: async (opts: any) => makeHandle(opts?.sessionId ?? "session-unknown", "created", opts),
+    resume: async (opts: any) => makeHandle(opts?.resumeSessionId ?? "session-unknown", "resumed", opts),
+    list: () => [] as any[],
+    roots: () => [] as any[],
     register: () => () => {},
   };
+
+  function makeHandle(sessionId: string, kind: "created" | "resumed", opts: any) {
+    const record = { sessionId, followupCalls: [] as any[], disposed: 0 };
+    const agent = {
+      id: sessionId,
+      session: { id: sessionId },
+      followup: (message: any) => {
+        record.followupCalls.push(message);
+        agents.eventSink?.(sessionId, {
+          type: "assistant/message",
+          data: { message: { content: [{ type: "text", text: agents.reply }] } },
+        });
+      },
+      whenIdle: async () => {},
+    };
+    const handle = {
+      agent,
+      dispose: async () => { record.disposed += 1; },
+    };
+    (kind === "created" ? createdSessions : resumedSessions).set(sessionId, record);
+    agents[kind].push({ opts, handle });
+    return handle;
+  }
 
   const savedImages: any[] = [];
   const savedFiles: any[] = [];
