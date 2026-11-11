@@ -1,9 +1,22 @@
 import http, { IncomingMessage } from "node:http";
+import https from "node:https";
+import type { Socket } from "node:net";
+import { openTunnel, resolveProxyUrl, secureTunnel } from "./proxy.js";
 
 const DEFAULT_API_BASE = "https://api.telegram.org";
 
+/** How long one Telegram API call may take before it is abandoned. */
+const REQUEST_TIMEOUT_MS = 30000;
+
 export type HttpRequestFn = (
-  options: { hostname: string; port?: number; path: string; method: string; headers?: Record<string, string> },
+  options: {
+    hostname: string;
+    port?: number;
+    path: string;
+    method: string;
+    headers?: Record<string, string>;
+    createConnection?: () => Socket;
+  },
   callback?: (res: IncomingMessage) => void,
 ) => {
   on(event: string, handler: (...args: any[]) => void): void;
@@ -16,12 +29,14 @@ export type HttpRequestFn = (
 export class TelegramBot {
   private token: string;
   private apiBase: string;
-  private requestFn: HttpRequestFn;
+  private requestFn?: HttpRequestFn;
+  private proxyUrl?: string;
 
-  constructor(token: string, options?: { apiBase?: string; requestFn?: HttpRequestFn }) {
+  constructor(token: string, options?: { apiBase?: string; requestFn?: HttpRequestFn; proxyUrl?: string }) {
     this.token = token;
     this.apiBase = options?.apiBase ?? DEFAULT_API_BASE;
-    this.requestFn = options?.requestFn ?? http.request;
+    this.requestFn = options?.requestFn;
+    this.proxyUrl = options?.proxyUrl;
   }
 
   private get baseUrl(): string {
@@ -86,19 +101,39 @@ export class TelegramBot {
     }
   }
 
-  private doRequest<T>(url: string, body: string): Promise<TelegramResponse<T>> {
+  /**
+   * Open an HTTPS tunnel through the configured proxy, if any.
+   * @param host - target host name.
+   * @param port - target port.
+   * @returns the TLS socket, or undefined when calls should go out directly.
+   */
+  private async openProxyTunnel(host: string, port: number): Promise<Socket | undefined> {
+    const proxy = resolveProxyUrl(this.proxyUrl);
+    if (proxy === undefined) return undefined;
+    const raw = await openTunnel(proxy, host, port, REQUEST_TIMEOUT_MS);
+    return secureTunnel(raw, host, REQUEST_TIMEOUT_MS);
+  }
+
+  private async doRequest<T>(url: string, body: string): Promise<TelegramResponse<T>> {
+    const parsed = new URL(url);
+    const isHttps = parsed.protocol === "https:";
+    const port = parseInt(parsed.port, 10) || (isHttps ? 443 : 80);
+    // A tunnel is already a TLS connection, so the request travels over plain http
+    // on top of it; without a proxy, https.request dials Telegram directly.
+    const tunnel = isHttps && this.requestFn === undefined ? await this.openProxyTunnel(parsed.hostname, port) : undefined;
+    const requestFn = this.requestFn ?? (tunnel !== undefined || !isHttps ? http.request : https.request);
     return new Promise((resolve, reject) => {
-      const parsed = new URL(url);
-      const req = this.requestFn(
+      const req = requestFn(
         {
           hostname: parsed.hostname,
-          port: (parseInt(parsed.port, 10) || 443) as number | undefined,
+          port,
           path: parsed.pathname + parsed.search,
           method: "POST",
           headers: {
             "Content-Type": "application/json",
             "Content-Length": String(Buffer.byteLength(body)),
           },
+          ...(tunnel !== undefined ? { createConnection: () => tunnel } : {}),
         },
         (res: http.IncomingMessage) => {
           const chunks: Buffer[] = [];
@@ -120,7 +155,7 @@ export class TelegramBot {
         req.destroy();
         reject(new Error("Telegram API request timeout"));
       });
-      req.setTimeout(30000);
+      req.setTimeout(REQUEST_TIMEOUT_MS);
       req.write(body);
       req.end();
     });

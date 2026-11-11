@@ -3,9 +3,11 @@ import React, { useState, useEffect } from "react";
 function TelegramSettings() {
   const [botToken, setBotToken] = useState("");
   const [allowedChatIds, setAllowedChatIds] = useState("");
+  const [webhookUrl, setWebhookUrl] = useState("");
   const [loading, setLoading] = useState(true);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState("");
+  const [webhookStatus, setWebhookStatus] = useState<{ url: string; ok: boolean; error?: string; checkedAt: string } | null>(null);
 
   useEffect(() => {
     fetch("/telegram/api/settings")
@@ -16,6 +18,8 @@ function TelegramSettings() {
       .then((data: any) => {
         setBotToken(data.botToken || "");
         setAllowedChatIds((data.allowedChatIds || []).join(", "));
+        setWebhookUrl(data.webhookUrl || "");
+        setWebhookStatus(data.webhookStatus || null);
       })
       .catch((err) => {
         setError(`Не удалось загрузить настройки (${err instanceof Error ? err.message : String(err)}). Серверный плагин не загружен.`);
@@ -32,9 +36,11 @@ function TelegramSettings() {
       const res = await fetch("/telegram/api/settings", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ botToken, allowedChatIds: ids }),
+        body: JSON.stringify({ botToken, allowedChatIds: ids, webhookUrl: webhookUrl.trim() }),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      setWebhookStatus(data.webhookStatus || null);
       setSaved(true);
       setTimeout(() => setSaved(false), 3000);
     } catch (err) {
@@ -70,6 +76,39 @@ function TelegramSettings() {
             style={{ padding: "8px 12px", borderRadius: 6, border: "1px solid var(--dsw-alias-border-l1, #444)", background: "var(--dsw-alias-bg-layer-2, #1e1e1e)", color: "var(--dsw-alias-label-primary, #fff)" }}
           />
         </div>
+
+        <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+          <label style={{ fontSize: 12, color: "var(--dsw-alias-label-secondary, #aaa)" }}>Webhook URL</label>
+          <input
+            type="url"
+            value={webhookUrl}
+            onChange={(e) => setWebhookUrl(e.target.value)}
+            placeholder="https://my-domain.example/telegram/webhook"
+            style={{ padding: "8px 12px", borderRadius: 6, border: "1px solid var(--dsw-alias-border-l1, #444)", background: "var(--dsw-alias-bg-layer-2, #1e1e1e)", color: "var(--dsw-alias-label-primary, #fff)" }}
+          />
+          <span style={{ fontSize: 11, color: "var(--dsw-alias-label-secondary, #aaa)" }}>
+            Публичный адрес, по которому Telegram достучится до DSH (домен или reverse-proxy). Путь из этого URL определяет,
+            куда придёт вебхук; пусто — берётся адрес сервера автоматически.
+          </span>
+        </div>
+
+        {webhookStatus && (
+          <div
+            style={{
+              padding: "8px 12px",
+              borderRadius: 6,
+              fontSize: 12,
+              border: `1px solid ${webhookStatus.ok ? "#22c55e" : "#ef4444"}`,
+              color: webhookStatus.ok ? "#22c55e" : "#ef4444",
+              whiteSpace: "pre-wrap",
+              wordBreak: "break-word",
+            }}
+          >
+            {webhookStatus.ok
+              ? `Вебхук зарегистрирован: ${webhookStatus.url}`
+              : `Telegram отклонил вебхук (${webhookStatus.checkedAt}):\n${webhookStatus.error || "неизвестная ошибка"}`}
+          </div>
+        )}
 
         <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 8 }}>
           <button type="submit" style={{ padding: "8px 16px", background: "var(--dsw-alias-accent-primary, #3b82f6)", color: "#fff", border: "none", borderRadius: 6, cursor: "pointer", fontWeight: 500 }}>

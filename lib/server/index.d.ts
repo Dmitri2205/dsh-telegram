@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { Agents, Storage } from "./router.js";
+import { Agents } from "./router.js";
 export declare const name = "telegram-bot";
 export declare const inject: string[];
 /** Settings page route. Registered unconditionally so the UI works before a token exists. */
@@ -58,12 +58,30 @@ export interface TelegramConfig {
     webhookSecret?: string;
     webhookPath?: string;
     maxFileSize?: number;
+    /** HTTP proxy for outbound Telegram calls; falls back to HTTPS_PROXY/HTTP_PROXY. */
+    proxy?: string;
 }
 /** The subset of the config the settings page owns. */
 export interface PersistedSettings {
     botToken?: string;
     allowedChatIds?: number[];
+    /** Public URL Telegram must call. Empty means "derive from the server origin". */
+    webhookUrl?: string;
 }
+/** Result of the last attempt to register the webhook with Telegram. */
+export interface WebhookStatus {
+    url: string;
+    ok: boolean;
+    error?: string;
+    checkedAt: string;
+}
+/**
+ * Turn any thrown value into a readable message. Errors raised by transport layers
+ * sometimes carry an empty `message` and keep the real cause in `cause`/`code`.
+ * @param err - the thrown value.
+ * @returns a non-empty description.
+ */
+export declare function describeError(err: unknown): string;
 /**
  * Read the settings page values: the persisted file wins, config is the fallback.
  * @param config - plugin config from cordis.patch.yml.
@@ -72,6 +90,7 @@ export interface PersistedSettings {
 export declare function loadSettings(config?: TelegramConfig): {
     botToken: string;
     allowedChatIds: number[];
+    webhookUrl: string;
 };
 /**
  * Persist the settings page values.
@@ -86,9 +105,7 @@ export declare function saveSettings(settings: PersistedSettings): void;
 export declare function apply(ctx: {
     webServer: WebServer;
     agents: Agents;
-    attachments: Attachments;
     credentials?: Credentials;
-    storage: Storage;
     logger?: {
         info(msg: string): void;
         error(msg: string): void;

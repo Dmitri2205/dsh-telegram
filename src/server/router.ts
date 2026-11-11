@@ -20,20 +20,11 @@ export interface Agents {
   register(agent: Agent): () => void;
 }
 
-export interface StorageForms {
-  [key: string]: {
-    get(key: string): string | undefined;
-    set(key: string, value: string): void;
-  };
-}
-
-export interface Storage {
-  form<K = string>(): {
-    get(key: string): K | undefined;
-    set(key: string, value: K): void;
-  };
-  mount<K>(form: K, facility: any): () => void;
-}
+/**
+ * Note: session persistence is intentionally in-memory. The host storage hub
+ * exposes only mounted data forms (`ctx.storage.form('domain')`), so a plain
+ * `ctx.storage.form<string>()` throws `form-not-mounted` on the first message.
+ */
 
 /**
  * ChatId → SessionId mapping router.
@@ -55,7 +46,6 @@ export interface Router {
 
 interface RouterContext {
   agents: Agents;
-  storage: Storage;
   logger: { info(msg: string): void; error(msg: string): void };
   attachments?: {
     saveImages(inputs: Array<{ data: Uint8Array; mediaType: string; name?: string }>): Promise<
@@ -76,16 +66,8 @@ export function createRouter(
 ): Router {
   // chatId → AgentHandle cache
   const chatToAgent = new Map<number, AgentHandle>();
-
-  // Load persisted mappings from storage
-  const persistedSessions = loadPersistedSessions(ctx.storage);
-
-  for (const [chatIdStr, sessionId] of Object.entries(persistedSessions)) {
-    const chatId = parseInt(chatIdStr, 10);
-    if (!isNaN(chatId)) {
-      ctx.logger.info(`Restored session mapping: chat ${chatId} → session ${sessionId}`);
-    }
-  }
+  // chatId → sessionId (in-memory; lost on restart, recreated on next message)
+  const chatToSession = new Map<number, string>();
 
   return {
     async routeMessage(chatId: number, message: { text?: string; photo?: string[]; document?: string }): Promise<void> {
@@ -93,9 +75,7 @@ export function createRouter(
 
       // If no cached agent, create or resume one
       if (!agent) {
-        const sessionId = ctx.storage
-          .form<string>()
-          .get(`${STORAGE_KEY_PREFIX}${chatId}`);
+        const sessionId = chatToSession.get(chatId);
 
         try {
           if (sessionId) {
@@ -112,10 +92,8 @@ export function createRouter(
             agent = handle;
             chatToAgent.set(chatId, agent);
 
-            // Persist the mapping
-            ctx.storage
-              .form<string>()
-              .set(`${STORAGE_KEY_PREFIX}${chatId}`, handle.id);
+            // Remember the mapping so later messages resume this session
+            chatToSession.set(chatId, handle.id);
             ctx.logger.info(`Created new session ${handle.id} for chat ${chatId}`);
           }
         } catch (err) {
@@ -158,34 +136,14 @@ export function createRouter(
       // Remove cached agent
       chatToAgent.delete(chatId);
 
-      // Remove persisted mapping
-      ctx.storage
-        .form<string>()
-        .set(`${STORAGE_KEY_PREFIX}${chatId}`, "");
+      // Forget the mapping so the next message starts fresh
+      chatToSession.delete(chatId);
 
       ctx.logger.info(`New session requested for chat ${chatId}`);
     },
 
     listSessions(): Array<{ chatId: number; sessionId: string }> {
-      const sessions: Array<{ chatId: number; sessionId: string }> = [];
-
-      for (const [chatIdStr, sessionId] of Object.entries(persistedSessions)) {
-        const chatId = parseInt(chatIdStr, 10);
-        if (!isNaN(chatId) && sessionId) {
-          sessions.push({ chatId, sessionId });
-        }
-      }
-
-      return sessions;
+      return [...chatToSession].map(([chatId, sessionId]) => ({ chatId, sessionId }));
     },
   };
-}
-
-function loadPersistedSessions(storage: Storage): Record<string, string> {
-  const result: Record<string, string> = {};
-
-  // We can't enumerate all keys, so we rely on the chatToAgent map
-  // and the fact that new sessions will be persisted on creation.
-  // This function is a placeholder for potential future persistence.
-  return result;
 }

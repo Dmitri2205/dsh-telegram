@@ -25,19 +25,11 @@ export interface Agents {
     roots(): Agent[];
     register(agent: Agent): () => void;
 }
-export interface StorageForms {
-    [key: string]: {
-        get(key: string): string | undefined;
-        set(key: string, value: string): void;
-    };
-}
-export interface Storage {
-    form<K = string>(): {
-        get(key: string): K | undefined;
-        set(key: string, value: K): void;
-    };
-    mount<K>(form: K, facility: any): () => void;
-}
+/**
+ * Note: session persistence is intentionally in-memory. The host storage hub
+ * exposes only mounted data forms (`ctx.storage.form('domain')`), so a plain
+ * `ctx.storage.form<string>()` throws `form-not-mounted` on the first message.
+ */
 /**
  * ChatId → SessionId mapping router.
  * Maintains a cache of chatId → active agent handles.
@@ -59,7 +51,6 @@ export interface Router {
 }
 interface RouterContext {
     agents: Agents;
-    storage: Storage;
     logger: {
         info(msg: string): void;
         error(msg: string): void;

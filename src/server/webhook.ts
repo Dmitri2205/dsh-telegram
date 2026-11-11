@@ -82,16 +82,39 @@ export function createWebhookHandler(
       }
     }
 
-    // Handle different update types
+    // Handle different update types. An escaping rejection would be answered by the
+    // host's last-resort guard as an empty 400, hiding the real cause — so surface it.
+    try {
+      await dispatchUpdate(body, router, config.allowedChatIds);
+    } catch (err) {
+      const detail = err instanceof Error ? (err.stack ?? err.message) : String(err);
+      res.writeHead(500, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: `Webhook handler failed: ${detail}` }));
+      return;
+    }
+
+    // Respond quickly with 200 OK
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ ok: true }));
+  };
+}
+
+async function dispatchUpdate(
+  body: TelegramUpdate,
+  router: {
+    routeMessage(chatId: number, message: { text?: string; photo?: string[]; document?: string }): Promise<void>;
+  },
+  allowedChatIds?: number[],
+): Promise<void> {
     if (body.message) {
-      await handleMessage(body.message, router, config.allowedChatIds);
+      await handleMessage(body.message, router, allowedChatIds);
     } else if (body.edited_message) {
-      await handleMessage(body.edited_message, router, config.allowedChatIds);
+      await handleMessage(body.edited_message, router, allowedChatIds);
     } else if (body.callback_query) {
       // Handle callback queries
       if (body.callback_query.message && "chat" in body.callback_query.message) {
         const chatId = body.callback_query.message.chat.id;
-        if (isAllowed(chatId, config.allowedChatIds)) {
+        if (isAllowed(chatId, allowedChatIds)) {
           await router.routeMessage(chatId, {
             text: `Callback: ${body.callback_query.data}`,
           });
@@ -100,11 +123,6 @@ export function createWebhookHandler(
     } else {
       // Unknown update type — ignore
     }
-
-    // Respond quickly with 200 OK
-    res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ ok: true }));
-  };
 }
 
 async function handleMessage(

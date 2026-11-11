@@ -1,15 +1,16 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import type { IncomingMessage, ServerResponse } from "node:http";
 
-import { Agents, Storage } from "./router.js";
+import { Agents } from "./router.js";
 import { TelegramBot } from "./telegram.js";
 import { createWebhookHandler } from "./webhook.js";
 import { createRouter } from "./router.js";
 
 export const name = "telegram-bot";
-export const inject = ["agents", "webServer", "storage"];
+export const inject = ["agents", "webServer"];
 
 /** Settings page route. Registered unconditionally so the UI works before a token exists. */
 export const SETTINGS_PATH = "/telegram/api/settings";
@@ -49,16 +50,71 @@ export interface TelegramConfig {
   webhookSecret?: string;
   webhookPath?: string;
   maxFileSize?: number;
+  /** HTTP proxy for outbound Telegram calls; falls back to HTTPS_PROXY/HTTP_PROXY. */
+  proxy?: string;
 }
 
 /** The subset of the config the settings page owns. */
 export interface PersistedSettings {
   botToken?: string;
   allowedChatIds?: number[];
+  /** Public URL Telegram must call. Empty means "derive from the server origin". */
+  webhookUrl?: string;
+}
+
+/** Result of the last attempt to register the webhook with Telegram. */
+export interface WebhookStatus {
+  url: string;
+  ok: boolean;
+  error?: string;
+  checkedAt: string;
 }
 
 /** Upper bound for a settings POST body; the payload is two small fields. */
 const MAX_SETTINGS_BODY = 64 * 1024;
+
+/**
+ * Turn any thrown value into a readable message. Errors raised by transport layers
+ * sometimes carry an empty `message` and keep the real cause in `cause`/`code`.
+ * @param err - the thrown value.
+ * @returns a non-empty description.
+ */
+export function describeError(err: unknown): string {
+  if (err instanceof Error) {
+    const cause = (err as { cause?: unknown }).cause;
+    const parts = [err.message || err.name || ""];
+    if (cause instanceof Error) parts.push(cause.message || cause.name || "");
+    else if (cause !== undefined && cause !== null) parts.push(String(cause));
+    const code = (err as { code?: unknown }).code;
+    if (typeof code === "string" || typeof code === "number") parts.push(`[${code}]`);
+    // AggregateError (Node's happy-eyeballs connect) hides per-address failures here.
+    const inner = (err as { errors?: unknown }).errors;
+    if (Array.isArray(inner) && inner.length > 0) {
+      const detailed = inner.map((entry) => {
+        if (!(entry instanceof Error)) return String(entry);
+        const entryCode = (entry as { code?: unknown }).code;
+        const address = (entry as { address?: unknown }).address;
+        const suffix = [typeof entryCode === "string" ? entryCode : "", typeof address === "string" ? address : ""]
+          .filter((part) => part !== "")
+          .join(" ");
+        return suffix === "" ? `${entry.name}: ${entry.message}` : `${entry.name}: ${entry.message} (${suffix})`;
+      });
+      parts.push(detailed.join("; "));
+    }
+    const text = parts.filter((part) => part !== "").join(" ").trim();
+    if (text !== "") return text;
+    const stack = err.stack?.split("\n")[0]?.trim();
+    return stack && stack !== "" ? stack : "unknown error (empty Error message)";
+  }
+  if (typeof err === "string" && err.trim() !== "") return err;
+  try {
+    const json = JSON.stringify(err);
+    if (json && json !== "{}") return json;
+  } catch {
+    // fall through to a fixed label
+  }
+  return `unknown error (${typeof err})`;
+}
 
 /**
  * Config values from cordis.patch.yml are not env-interpolated by the loader, so an
@@ -76,19 +132,20 @@ function resolveToken(raw: string | undefined): string {
  * @param config - plugin config from cordis.patch.yml.
  * @returns the effective token and chat whitelist.
  */
-export function loadSettings(config: TelegramConfig = {}): { botToken: string; allowedChatIds: number[] } {
+export function loadSettings(config: TelegramConfig = {}): { botToken: string; allowedChatIds: number[]; webhookUrl: string } {
   if (existsSync(SETTINGS_FILE)) {
     try {
       const parsed = JSON.parse(readFileSync(SETTINGS_FILE, "utf8")) as PersistedSettings;
       return {
         botToken: resolveToken(parsed.botToken) || resolveToken(config.botToken),
         allowedChatIds: parsed.allowedChatIds ?? config.allowedChatIds ?? [],
+        webhookUrl: typeof parsed.webhookUrl === "string" ? parsed.webhookUrl.trim() : "",
       };
     } catch {
       // A corrupt file must not brick the plugin — fall back to config.
     }
   }
-  return { botToken: resolveToken(config.botToken), allowedChatIds: config.allowedChatIds || [] };
+  return { botToken: resolveToken(config.botToken), allowedChatIds: config.allowedChatIds || [], webhookUrl: "" };
 }
 
 /**
@@ -99,22 +156,61 @@ export function saveSettings(settings: PersistedSettings): void {
   mkdirSync(dirname(SETTINGS_FILE), { recursive: true });
   writeFileSync(
     SETTINGS_FILE,
-    JSON.stringify({ botToken: settings.botToken ?? "", allowedChatIds: settings.allowedChatIds ?? [] }, null, 2),
+    JSON.stringify(
+      {
+        botToken: settings.botToken ?? "",
+        allowedChatIds: settings.allowedChatIds ?? [],
+        webhookUrl: settings.webhookUrl ?? "",
+      },
+      null,
+      2,
+    ),
     { mode: 0o600 },
   );
+}
+
+/**
+ * Check that a value is an absolute http(s) URL Telegram could call.
+ * @param value - candidate webhook URL.
+ * @returns true when the URL is usable for setWebhook.
+ */
+function isHttpUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
+  }
 }
 
 /**
  * HTTP handler for {@link SETTINGS_PATH}: GET returns the effective settings,
  * POST persists them.
  * @param config - plugin config, used as the fallback when no file exists.
+ * @param defaultWebhookUrl - URL the bot uses when no explicit webhook URL is set.
  * @returns a node request handler.
  */
-function createSettingsHandler(config: TelegramConfig): (req: IncomingMessage, res: ServerResponse) => void {
+function createSettingsHandler(
+  config: TelegramConfig,
+  defaultWebhookUrl: () => string,
+  webhook: {
+    getStatus: () => WebhookStatus | null;
+    register: (url: string) => Promise<WebhookStatus>;
+  },
+): (req: IncomingMessage, res: ServerResponse) => void {
   return (req, res) => {
     if (req.method === "GET") {
+      const settings = loadSettings(config);
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify(loadSettings(config)));
+      res.end(
+        JSON.stringify({
+          botToken: settings.botToken,
+          allowedChatIds: settings.allowedChatIds,
+          webhookUrl: settings.webhookUrl || defaultWebhookUrl(),
+          webhookUrlIsExplicit: settings.webhookUrl !== "",
+          webhookStatus: webhook.getStatus(),
+        }),
+      );
       return;
     }
     if (req.method !== "POST") {
@@ -139,9 +235,25 @@ function createSettingsHandler(config: TelegramConfig): (req: IncomingMessage, r
         const allowedChatIds = Array.isArray(parsed.allowedChatIds)
           ? parsed.allowedChatIds.filter((id): id is number => typeof id === "number" && Number.isFinite(id))
           : [];
-        saveSettings({ botToken: typeof parsed.botToken === "string" ? parsed.botToken.trim() : "", allowedChatIds });
-        res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ success: true }));
+        const webhookUrl =
+          typeof parsed.webhookUrl === "string" ? parsed.webhookUrl.trim() : "";
+        if (webhookUrl !== "" && !isHttpUrl(webhookUrl)) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "webhookUrl must be an http(s) URL" }));
+          return;
+        }
+        saveSettings({ botToken: typeof parsed.botToken === "string" ? parsed.botToken.trim() : "", allowedChatIds, webhookUrl });
+        // Re-register immediately so the page shows Telegram's verdict without a restart.
+        if (webhookUrl === "") {
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ success: true, webhookStatus: webhook.getStatus() }));
+          return;
+        }
+        void webhook.register(webhookUrl).then((status) => {
+          if (res.writableEnded) return;
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ success: true, webhookStatus: status }));
+        });
       } catch {
         res.writeHead(400, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: "Invalid settings payload" }));
@@ -159,9 +271,7 @@ export function apply(
   ctx: {
     webServer: WebServer;
     agents: Agents;
-    attachments: Attachments;
     credentials?: Credentials;
-    storage: Storage;
     logger?: { info(msg: string): void; error(msg: string): void; warn(msg: string): void; debug(msg: string): void };
   },
   config: TelegramConfig = {},
@@ -174,12 +284,69 @@ export function apply(
   };
   const disposers: Array<() => void> = [];
 
-  // 1. Settings API — registered before the token check so the page always works.
+  // Shared webhook state: the settings page shows Telegram's answer verbatim,
+  // including the error text ("An HTTPS URL must be provided for webhook").
+  let botInstance: TelegramBot | null = null;
+  let webhookSecretValue = "";
+  let webhookStatus: WebhookStatus | null = null;
+  const registerWebhook = async (url: string): Promise<WebhookStatus> => {
+    const checkedAt = new Date().toISOString();
+    if (!botInstance) {
+      webhookStatus = {
+        url,
+        ok: false,
+        error: "Telegram bot is not running: the bot token is not set. Save a token and restart DSH.",
+        checkedAt,
+      };
+      return webhookStatus;
+    }
+    try {
+      await botInstance.setWebhook(url, webhookSecretValue || undefined);
+      webhookStatus = { url, ok: true, checkedAt };
+      logger.info(`Telegram webhook registered: ${url}`);
+    } catch (err) {
+      const error = describeError(err);
+      webhookStatus = { url, ok: false, error, checkedAt };
+      logger.warn(`Failed to set Telegram webhook: ${error}`);
+      if (err instanceof Error && err.stack) logger.debug(err.stack);
+      else logger.debug(`Raw webhook error: ${JSON.stringify(err)}`);
+    }
+    return webhookStatus;
+  };
+
+  // 1. Effective settings and the webhook target.
+  //    An explicit public URL wins; otherwise the URL is derived from the server origin,
+  //    which is often a loopback address Telegram cannot reach.
+  const settings = loadSettings(config);
+  let webhookPath = config.webhookPath || "/telegram/webhook";
+  let explicitWebhookUrl = "";
+  if (settings.webhookUrl) {
+    try {
+      const parsedUrl = new URL(settings.webhookUrl);
+      explicitWebhookUrl = parsedUrl.toString();
+      webhookPath = parsedUrl.pathname || webhookPath;
+    } catch {
+      // Validated on save; ignore a corrupted value and fall back to the origin.
+    }
+  }
+  const localWebhookUrl = (): string => {
+    try {
+      return `${ctx.webServer.getOrigin()}${webhookPath}`;
+    } catch {
+      return "";
+    }
+  };
+
+  // 2. Settings API — registered before the token check so the page always works.
   disposers.push(
     ctx.webServer.register({
       kind: "exact",
       path: SETTINGS_PATH,
-      handler: createSettingsHandler(config),
+      handler: createSettingsHandler(
+        config,
+        () => loadSettings(config).webhookUrl || localWebhookUrl(),
+        { getStatus: () => webhookStatus, register: registerWebhook },
+      ),
     }),
   );
 
@@ -188,8 +355,7 @@ export function apply(
     logger.info("Telegram bot plugin disposed");
   };
 
-  // 2. Get bot token from the settings file, config, or credentials
-  const settings = loadSettings(config);
+  // 3. Get bot token from the settings file, config, or credentials
   let botToken: string;
   if (settings.botToken) {
     botToken = settings.botToken;
@@ -202,16 +368,19 @@ export function apply(
   const allowedChatIds = settings.allowedChatIds.length > 0 ? settings.allowedChatIds : config.allowedChatIds;
 
   // 3. Create TelegramBot instance and the router
-  const bot = new TelegramBot(botToken);
+  const bot = new TelegramBot(botToken, { proxyUrl: config.proxy });
+  botInstance = bot;
   const router = createRouter(bot, {
     agents: ctx.agents,
-    storage: ctx.storage,
     logger,
   });
 
   // 4. Create webhook handler
-  const webhookPath = config.webhookPath || "/telegram/webhook";
-  const webhookSecret = config.webhookSecret || botToken; // default to bot token if not set
+  // Telegram rejects a secret_token with characters outside [A-Za-z0-9_-], and a bot
+  // token always contains ":" — so derive a stable secret from the token instead.
+  const webhookSecret =
+    config.webhookSecret || createHash("sha256").update(`dsh-telegram:${botToken}`).digest("hex");
+  webhookSecretValue = webhookSecret;
 
   const webhookHandler = createWebhookHandler(
     {
@@ -231,14 +400,14 @@ export function apply(
   );
 
   // 6. Set the webhook on Telegram
-  try {
-    const webhookUrl = `${ctx.webServer.getOrigin()}${webhookPath}`;
-    bot.setWebhook(webhookUrl, webhookSecret).catch((err) => {
-      logger.warn(`Failed to set Telegram webhook: ${err instanceof Error ? err.message : String(err)}`);
-    });
+  const webhookUrl = explicitWebhookUrl || localWebhookUrl();
+  if (!webhookUrl) {
+    logger.warn("Telegram bot started without a webhook URL: set a public Webhook URL in Settings → Telegram Bot.");
+  } else if (!isHttpUrl(webhookUrl)) {
+    logger.warn(`Telegram bot started with a non-http(s) webhook URL: ${webhookUrl}`);
+  } else {
+    void registerWebhook(webhookUrl);
     logger.info(`Telegram bot plugin loaded. Webhook URL: ${webhookUrl}`);
-  } catch (err) {
-    logger.warn(`Telegram bot started without a webhook URL: ${err instanceof Error ? err.message : String(err)}`);
   }
 
   return () => {
