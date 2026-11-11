@@ -1,16 +1,28 @@
-import { AgentHandle, Agents, Storage } from "./router.js";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { homedir } from "node:os";
+import type { IncomingMessage, ServerResponse } from "node:http";
+
+import { Agents, Storage } from "./router.js";
 import { TelegramBot } from "./telegram.js";
 import { createWebhookHandler } from "./webhook.js";
 import { createRouter } from "./router.js";
+
+export const name = "telegram-bot";
 export const inject = ["agents", "webServer", "storage"];
 
+/** Settings page route. Registered unconditionally so the UI works before a token exists. */
+export const SETTINGS_PATH = "/telegram/api/settings";
+
+/** Where the settings page persists the token and the chat whitelist. */
+const SETTINGS_FILE = join(homedir(), ".dsh", "telegram-settings.json");
 
 /**
  * Cordis interfaces — re-declared locally to avoid peer dependency issues.
  * The actual types come from @deepseek-ai/cordis at runtime.
  */
 export interface WebServer {
-  register(route: { kind: "exact" | "prefix"; path: string; handler: (req: import("node:http").IncomingMessage, res: import("node:http").ServerResponse) => void | Promise<void> }): () => void;
+  register(route: { kind: "exact" | "prefix"; path: string; handler: (req: IncomingMessage, res: ServerResponse) => void | Promise<void> }): () => void;
   getOrigin(): string;
 }
 
@@ -39,10 +51,109 @@ export interface TelegramConfig {
   maxFileSize?: number;
 }
 
+/** The subset of the config the settings page owns. */
+export interface PersistedSettings {
+  botToken?: string;
+  allowedChatIds?: number[];
+}
+
+/** Upper bound for a settings POST body; the payload is two small fields. */
+const MAX_SETTINGS_BODY = 64 * 1024;
+
+/**
+ * Config values from cordis.patch.yml are not env-interpolated by the loader, so an
+ * unset token arrives as the literal `${TELEGRAM_BOT_TOKEN}`. Treat that as "not set".
+ * @param raw - token candidate from the settings file or config.
+ * @returns the usable token, or an empty string.
+ */
+function resolveToken(raw: string | undefined): string {
+  const token = (raw ?? "").trim();
+  return token.startsWith("${") && token.endsWith("}") ? "" : token;
+}
+
+/**
+ * Read the settings page values: the persisted file wins, config is the fallback.
+ * @param config - plugin config from cordis.patch.yml.
+ * @returns the effective token and chat whitelist.
+ */
+export function loadSettings(config: TelegramConfig = {}): { botToken: string; allowedChatIds: number[] } {
+  if (existsSync(SETTINGS_FILE)) {
+    try {
+      const parsed = JSON.parse(readFileSync(SETTINGS_FILE, "utf8")) as PersistedSettings;
+      return {
+        botToken: resolveToken(parsed.botToken) || resolveToken(config.botToken),
+        allowedChatIds: parsed.allowedChatIds ?? config.allowedChatIds ?? [],
+      };
+    } catch {
+      // A corrupt file must not brick the plugin — fall back to config.
+    }
+  }
+  return { botToken: resolveToken(config.botToken), allowedChatIds: config.allowedChatIds || [] };
+}
+
+/**
+ * Persist the settings page values.
+ * @param settings - token and chat whitelist to store.
+ */
+export function saveSettings(settings: PersistedSettings): void {
+  mkdirSync(dirname(SETTINGS_FILE), { recursive: true });
+  writeFileSync(
+    SETTINGS_FILE,
+    JSON.stringify({ botToken: settings.botToken ?? "", allowedChatIds: settings.allowedChatIds ?? [] }, null, 2),
+    { mode: 0o600 },
+  );
+}
+
+/**
+ * HTTP handler for {@link SETTINGS_PATH}: GET returns the effective settings,
+ * POST persists them.
+ * @param config - plugin config, used as the fallback when no file exists.
+ * @returns a node request handler.
+ */
+function createSettingsHandler(config: TelegramConfig): (req: IncomingMessage, res: ServerResponse) => void {
+  return (req, res) => {
+    if (req.method === "GET") {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(loadSettings(config)));
+      return;
+    }
+    if (req.method !== "POST") {
+      res.writeHead(405, { Allow: "GET, POST" });
+      res.end();
+      return;
+    }
+    let body = "";
+    req.on("data", (chunk: Buffer | string) => {
+      body += chunk;
+      if (body.length > MAX_SETTINGS_BODY) {
+        res.writeHead(413);
+        res.end();
+        req.destroy();
+      }
+    });
+    req.on("end", () => {
+      if (res.writableEnded) return;
+      try {
+        const parsed = JSON.parse(body) as PersistedSettings;
+        if (typeof parsed !== "object" || parsed === null) throw new Error("body must be an object");
+        const allowedChatIds = Array.isArray(parsed.allowedChatIds)
+          ? parsed.allowedChatIds.filter((id): id is number => typeof id === "number" && Number.isFinite(id))
+          : [];
+        saveSettings({ botToken: typeof parsed.botToken === "string" ? parsed.botToken.trim() : "", allowedChatIds });
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ success: true }));
+      } catch {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Invalid settings payload" }));
+      }
+    });
+  };
+}
+
 /**
  * Apply the Telegram plugin.
- * Sets up the bot, router, and webhook handler, then registers the webhook route.
- * Returns a dispose function to clean up.
+ * Registers the settings API first, then the bot: router, webhook handler and
+ * the webhook route. Returns a dispose function to clean up.
  */
 export function apply(
   ctx: {
@@ -61,26 +172,37 @@ export function apply(
     warn: () => {},
     debug: () => {},
   };
+  const disposers: Array<() => void> = [];
 
-  // 1. Get bot token from credentials or config
+  // 1. Settings API — registered before the token check so the page always works.
+  disposers.push(
+    ctx.webServer.register({
+      kind: "exact",
+      path: SETTINGS_PATH,
+      handler: createSettingsHandler(config),
+    }),
+  );
+
+  const disposeAll = (): void => {
+    for (const dispose of disposers.splice(0)) dispose();
+    logger.info("Telegram bot plugin disposed");
+  };
+
+  // 2. Get bot token from the settings file, config, or credentials
+  const settings = loadSettings(config);
   let botToken: string;
-  if (config.botToken) {
-    botToken = config.botToken;
-  } else if (ctx.credentials) {
-    const cred = ctx.credentials.resolve("telegram:botToken");
-    if (cred && "value" in cred && cred.value) {
-      botToken = cred.value as string;
-    } else {
-      throw new Error("Telegram bot token not configured. Provide it in config or via credentials.");
-    }
+  if (settings.botToken) {
+    botToken = settings.botToken;
+  } else if (ctx.credentials?.resolve("telegram:botToken")?.value) {
+    botToken = ctx.credentials.resolve("telegram:botToken")!.value as string;
   } else {
-    throw new Error("Telegram bot token not configured. Provide it in config or via credentials.");
+    logger.warn(`Telegram bot token is not set. Open Settings → Telegram Bot (${SETTINGS_PATH}) to configure it.`);
+    return disposeAll;
   }
+  const allowedChatIds = settings.allowedChatIds.length > 0 ? settings.allowedChatIds : config.allowedChatIds;
 
-  // 2. Create TelegramBot instance
+  // 3. Create TelegramBot instance and the router
   const bot = new TelegramBot(botToken);
-
-  // 3. Create router
   const router = createRouter(bot, {
     agents: ctx.agents,
     storage: ctx.storage,
@@ -94,32 +216,33 @@ export function apply(
   const webhookHandler = createWebhookHandler(
     {
       webhookSecret,
-      allowedChatIds: config.allowedChatIds,
+      allowedChatIds,
     },
     router,
   );
 
   // 5. Register webhook route
-  const dispose = ctx.webServer.register({
-    kind: "prefix",
-    path: webhookPath,
-    handler: webhookHandler,
-  });
+  disposers.push(
+    ctx.webServer.register({
+      kind: "prefix",
+      path: webhookPath,
+      handler: webhookHandler,
+    }),
+  );
 
   // 6. Set the webhook on Telegram
-  const origin = ctx.webServer.getOrigin();
-  const webhookUrl = `${origin}${webhookPath}`;
+  try {
+    const webhookUrl = `${ctx.webServer.getOrigin()}${webhookPath}`;
+    bot.setWebhook(webhookUrl, webhookSecret).catch((err) => {
+      logger.warn(`Failed to set Telegram webhook: ${err instanceof Error ? err.message : String(err)}`);
+    });
+    logger.info(`Telegram bot plugin loaded. Webhook URL: ${webhookUrl}`);
+  } catch (err) {
+    logger.warn(`Telegram bot started without a webhook URL: ${err instanceof Error ? err.message : String(err)}`);
+  }
 
-  bot.setWebhook(webhookUrl, webhookSecret).catch((err) => {
-    logger.warn(`Failed to set Telegram webhook: ${err instanceof Error ? err.message : String(err)}`);
-  });
-
-  logger.info(`Telegram bot plugin loaded. Webhook URL: ${webhookUrl}`);
-
-  // Return dispose function
   return () => {
     bot.deleteWebhook().catch(() => {});
-    dispose();
-    logger.info("Telegram bot plugin disposed");
+    disposeAll();
   };
 }

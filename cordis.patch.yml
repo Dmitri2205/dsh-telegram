@@ -2,7 +2,8 @@
     - id: telegram-bot
       name: '@local/dsh-telegram'
       config:
-        botToken: '${TELEGRAM_BOT_TOKEN}'
+        # Токен задаётся в настройках плагина (Settings → Telegram Bot) и хранится
+        # в ~/.dsh/telegram-settings.json. Плейсхолдеры ${ENV} загрузчик не раскрывает.
         mode: webhook
         allowedChatIds: []
         webhookSecret: ''
