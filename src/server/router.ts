@@ -3,6 +3,7 @@
  * The actual shapes come from @deepseek-ai/cordis and dsh-agent at runtime.
  */
 import { randomUUID } from "node:crypto";
+import { handleCommand, parseCommand } from "./commands.js";
 
 /** Message the agent loop accepts through `agent.followup()`. */
 export interface UserMessage {
@@ -106,6 +107,14 @@ export function createRouter(
       const text = message.text?.trim();
       if (!text) return;
 
+      // Commands are answered locally: they must not consume a turn of the agent.
+      const parsed = parseCommand(text);
+      if (parsed) {
+        const result = await handleCommand(parsed.command, parsed.args, chatId, { newSession, listSessions });
+        if (result.text) await reply(chatId, result.text);
+        return;
+      }
+
       let handle: AgentHandle;
       try {
         handle = await ensureAgent(chatId);
@@ -141,21 +150,9 @@ export function createRouter(
       }
     },
 
-    newSession(chatId: number): void {
-      const handle = chatToAgent.get(chatId);
-      chatToAgent.delete(chatId);
-      chatToSession.delete(chatId);
-      if (handle) {
-        void handle.dispose().catch((err: unknown) => {
-          ctx.logger.error(`Failed to dispose agent for chat ${chatId}: ${describe(err)}`);
-        });
-      }
-      ctx.logger.info(`New session requested for chat ${chatId}`);
-    },
+    newSession,
 
-    listSessions(): Array<{ chatId: number; sessionId: string }> {
-      return [...chatToSession].map(([chatId, sessionId]) => ({ chatId, sessionId }));
-    },
+    listSessions,
 
     handleSessionEvent(sessionId: string, event: SessionEventLike): void {
       const collected = inflightText.get(sessionId);
@@ -177,6 +174,22 @@ export function createRouter(
       ));
     },
   };
+
+  function newSession(chatId: number): void {
+    const handle = chatToAgent.get(chatId);
+    chatToAgent.delete(chatId);
+    chatToSession.delete(chatId);
+    if (handle) {
+      void handle.dispose().catch((err: unknown) => {
+        ctx.logger.error(`Failed to dispose agent for chat ${chatId}: ${describe(err)}`);
+      });
+    }
+    ctx.logger.info(`New session requested for chat ${chatId}`);
+  }
+
+  function listSessions(): Array<{ chatId: number; sessionId: string }> {
+    return [...chatToSession].map(([chatId, sessionId]) => ({ chatId, sessionId }));
+  }
 
   async function reply(chatId: number, text: string): Promise<void> {
     try {

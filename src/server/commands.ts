@@ -22,14 +22,13 @@ export async function handleCommand(
   command: string,
   args: string[],
   chatId: number,
-  bot: { sendText: (chatId: number | string, text: string) => Promise<unknown> },
   router: {
     newSession(chatId: number): void;
     listSessions(): Array<{ chatId: number; sessionId: string }>;
   },
 ): Promise<{ action: "send" | "new_session" | "list"; text?: string }> {
+  void args;
   switch (command) {
-    case "start":
     case "start": {
       router.newSession(chatId);
       return {

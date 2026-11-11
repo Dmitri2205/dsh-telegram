@@ -111,4 +111,34 @@ test("Router", async () => {
     assert.strictEqual(messages.length, 1);
     assert.ok(messages[0].text.includes("Failed to process"));
   });
+
+  test("/help is answered locally without creating an agent", async () => {
+    messages = [];
+    const ctx = createFakeContext();
+    const router = createRouter(mockBot, ctx as any);
+    ctx.agents.eventSink = (sessionId: string, event: any) => router.handleSessionEvent(sessionId, event);
+
+    await router.routeMessage(12345, { text: "/help" });
+
+    assert.strictEqual(ctx.agents.created.length, 0);
+    assert.strictEqual(messages.length, 1);
+    assert.ok(messages[0].text.includes("/new"));
+  });
+
+  test("/new drops the cached agent so the next message creates a fresh session", async () => {
+    messages = [];
+    const ctx = createFakeContext();
+    const router = createRouter(mockBot, ctx as any);
+    ctx.agents.eventSink = (sessionId: string, event: any) => router.handleSessionEvent(sessionId, event);
+
+    await router.routeMessage(12345, { text: "First" });
+    assert.strictEqual(ctx.agents.created.length, 1);
+    const firstHandle = ctx.agents.created[0].handle;
+
+    await router.routeMessage(12345, { text: "/new" });
+    assert.strictEqual(firstHandle.record.disposed, 1, "old agent must be disposed");
+
+    await router.routeMessage(12345, { text: "Second" });
+    assert.strictEqual(ctx.agents.created.length, 2);
+  });
 });

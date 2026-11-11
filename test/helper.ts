@@ -41,6 +41,7 @@ export function createFakeContext() {
     };
     const handle = {
       agent,
+      record,
       dispose: async () => { record.disposed += 1; },
     };
     (kind === "created" ? createdSessions : resumedSessions).set(sessionId, record);

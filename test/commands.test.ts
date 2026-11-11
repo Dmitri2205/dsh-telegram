@@ -64,10 +64,6 @@ test("handleCommand", async () => {
   let sessionCreated = false;
   let lastChatId: number | null = null;
 
-  const mockBot = {
-    sendText: async (_chatId: number | string, _text: string) => {},
-  };
-
   const mockRouter = {
     newSession: (chatId?: number) => {
       if (chatId !== undefined) lastChatId = chatId;
@@ -78,7 +74,7 @@ test("handleCommand", async () => {
 
   test("/start creates new session", async () => {
     sessionCreated = false;
-    const result = await handleCommand("start", [], 12345, mockBot, mockRouter);
+    const result = await handleCommand("start", [], 12345, mockRouter);
     assert.strictEqual(result.action, "new_session");
     assert.ok(sessionCreated);
     assert.ok(result.text!.includes("Welcome"));
@@ -86,14 +82,14 @@ test("handleCommand", async () => {
 
   test("/new creates new session", async () => {
     sessionCreated = false;
-    const result = await handleCommand("new", [], 12345, mockBot, mockRouter);
+    const result = await handleCommand("new", [], 12345, mockRouter);
     assert.strictEqual(result.action, "new_session");
     assert.ok(sessionCreated);
     assert.ok(result.text!.includes("New session"));
   });
 
   test("/help shows commands", async () => {
-    const result = await handleCommand("help", [], 12345, mockBot, mockRouter);
+    const result = await handleCommand("help", [], 12345, mockRouter);
     assert.strictEqual(result.action, "send");
     assert.ok(result.text!.includes("/start"));
     assert.ok(result.text!.includes("/new"));
@@ -106,7 +102,7 @@ test("handleCommand", async () => {
       { chatId: 67890, sessionId: "session-2" },
     ];
 
-    const result = await handleCommand("list", [], 12345, mockBot, mockRouter);
+    const result = await handleCommand("list", [], 12345, mockRouter);
     assert.strictEqual(result.action, "list");
     assert.ok(result.text!.includes("Active sessions (2)"));
     assert.ok(result.text!.includes("session-1"));
@@ -116,20 +112,20 @@ test("handleCommand", async () => {
   test("/list shows empty when no sessions", async () => {
     mockRouter.listSessions = () => [];
 
-    const result = await handleCommand("list", [], 12345, mockBot, mockRouter);
+    const result = await handleCommand("list", [], 12345, mockRouter);
     assert.strictEqual(result.action, "send");
     assert.ok(result.text!.includes("No active sessions"));
   });
 
   test("unknown command returns error", async () => {
-    const result = await handleCommand("unknown", [], 12345, mockBot, mockRouter);
+    const result = await handleCommand("unknown", [], 12345, mockRouter);
     assert.strictEqual(result.action, "send");
     assert.ok(result.text!.includes("Unknown command"));
   });
 
   test("resets session on /start", async () => {
     lastChatId = null;
-    await handleCommand("start", [], 12345, mockBot, mockRouter);
+    await handleCommand("start", [], 12345, mockRouter);
     assert.strictEqual(lastChatId, 12345);
   });
 });

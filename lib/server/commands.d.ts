@@ -9,9 +9,7 @@ export declare function parseCommand(text: string): {
 /**
  * Handle a parsed command and return the appropriate action.
  */
-export declare function handleCommand(command: string, args: string[], chatId: number, bot: {
-    sendText: (chatId: number | string, text: string) => Promise<unknown>;
-}, router: {
+export declare function handleCommand(command: string, args: string[], chatId: number, router: {
     newSession(chatId: number): void;
     listSessions(): Array<{
         chatId: number;
