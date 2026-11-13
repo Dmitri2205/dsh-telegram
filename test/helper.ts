@@ -26,10 +26,13 @@ export function createFakeContext() {
   };
 
   function makeHandle(sessionId: string, kind: "created" | "resumed", opts: any) {
-    const record = { sessionId, followupCalls: [] as any[], disposed: 0 };
+    const record = { sessionId, followupCalls: [] as any[], disposed: 0, cancelled: 0 };
+    let status: "idle" | "running" = "idle";
     const agent = {
       id: sessionId,
       session: { id: sessionId },
+      get status() { return status; },
+      set status(s: "idle" | "running") { status = s; },
       followup: (message: any) => {
         record.followupCalls.push(message);
         agents.eventSink?.(sessionId, {
@@ -38,6 +41,10 @@ export function createFakeContext() {
         });
       },
       whenIdle: async () => {},
+      cancel: (options?: { kind?: string }) => {
+        record.cancelled += 1;
+        status = "idle";
+      },
     };
     const handle = {
       agent,

@@ -375,6 +375,7 @@ export function apply(
     agents: ctx.agents,
     logger,
     cwd: process.cwd(),
+    workspaceRegistry: (ctx as { get?(key: string): unknown } | undefined)?.get?.("workspaceRegistry"),
   });
 
   // Durable session events are how the assistant's answer reaches us: the loop

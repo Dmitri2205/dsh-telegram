@@ -70,6 +70,8 @@ test("handleCommand", async () => {
       sessionCreated = true;
     },
     listSessions: (): Array<{ chatId: number; sessionId: string }> => [],
+    createNewSession: async () => ({ text: "🆕 New session started. How can I help you?" }),
+    stop: async (chatId: number) => false,
   };
 
   test("/start creates new session", async () => {
@@ -83,7 +85,7 @@ test("handleCommand", async () => {
   test("/new creates new session", async () => {
     sessionCreated = false;
     const result = await handleCommand("new", [], 12345, mockRouter);
-    assert.strictEqual(result.action, "new_session");
+    assert.strictEqual(result.action, "send");
     assert.ok(sessionCreated);
     assert.ok(result.text!.includes("New session"));
   });
@@ -127,5 +129,29 @@ test("handleCommand", async () => {
     lastChatId = null;
     await handleCommand("start", [], 12345, mockRouter);
     assert.strictEqual(lastChatId, 12345);
+  });
+
+  test("/stop calls router.stop and returns stopped message", async () => {
+    let stopCalled = false;
+    const stopMock = async (_chatId: number) => { stopCalled = true; return true; };
+    const result = await handleCommand("stop", [], 12345, { ...mockRouter, stop: stopMock });
+    assert.strictEqual(result.action, "send");
+    assert.ok(stopCalled);
+    assert.ok(result.text!.includes("остановлена"));
+  });
+
+  test("/cancel is an alias for /stop", async () => {
+    let stopCalled = false;
+    const stopMock = async (_chatId: number) => { stopCalled = true; return true; };
+    const result = await handleCommand("cancel", [], 12345, { ...mockRouter, stop: stopMock });
+    assert.strictEqual(result.action, "send");
+    assert.ok(stopCalled);
+    assert.ok(result.text!.includes("остановлена"));
+  });
+
+  test("/stop returns refusal when router.stop returns false", async () => {
+    const result = await handleCommand("stop", [], 12345, mockRouter);
+    assert.strictEqual(result.action, "send");
+    assert.ok(result.text!.includes("Нечего останавливать"));
   });
 });
