@@ -56,5 +56,9 @@ export declare class TelegramBot {
     getFile(fileId: string): Promise<{
         file_path: string;
     }>;
+    answerCallbackQuery(callbackQueryId: string, text?: string, options?: {
+        show_alert?: boolean;
+        url?: string;
+    }): Promise<unknown>;
 }
 //# sourceMappingURL=telegram.d.ts.map

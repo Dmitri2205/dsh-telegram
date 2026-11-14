@@ -6,6 +6,10 @@ import { callWebhookHandler } from "./helper.ts";
 test("Webhook handler", async () => {
   let receivedMessages: Array<{ chatId: number; message: { text?: string; photo?: string[]; document?: string } }> = [];
 
+  const mockBot = {
+    answerCallbackQuery: async (callbackQueryId: string, text?: string) => {},
+  };
+
   const mockRouter = {
     routeMessage: async (chatId: number, message: { text?: string; photo?: string[]; document?: string }) => {
       receivedMessages.push({ chatId, message });
@@ -18,7 +22,7 @@ test("Webhook handler", async () => {
   };
 
   test("accepts POST with valid JSON", async () => {
-    const routeHandler = createWebhookHandler(mockConfig, mockRouter);
+    const routeHandler = createWebhookHandler(mockConfig, mockBot, mockRouter);
     receivedMessages = [];
 
     const update: TelegramUpdate = {
@@ -50,7 +54,7 @@ test("Webhook handler", async () => {
   });
 
   test("rejects invalid secret token", async () => {
-    const routeHandler = createWebhookHandler(mockConfig, mockRouter);
+    const routeHandler = createWebhookHandler(mockConfig, mockBot, mockRouter);
     receivedMessages = [];
 
     const update: TelegramUpdate = {
@@ -78,7 +82,7 @@ test("Webhook handler", async () => {
   });
 
   test("rejects non-POST methods", async () => {
-    const routeHandler = createWebhookHandler(mockConfig, mockRouter);
+    const routeHandler = createWebhookHandler(mockConfig, mockBot, mockRouter);
 
     const result = await callWebhookHandler(routeHandler, {
       method: "GET",
@@ -90,7 +94,7 @@ test("Webhook handler", async () => {
   });
 
   test("rejects invalid JSON", async () => {
-    const routeHandler = createWebhookHandler(mockConfig, mockRouter);
+    const routeHandler = createWebhookHandler(mockConfig, mockBot, mockRouter);
 
     const result = await callWebhookHandler(routeHandler, {
       method: "POST",
@@ -107,7 +111,7 @@ test("Webhook handler", async () => {
   });
 
   test("parses message.photo", async () => {
-    const routeHandler = createWebhookHandler(mockConfig, mockRouter);
+    const routeHandler = createWebhookHandler(mockConfig, mockBot, mockRouter);
     receivedMessages = [];
 
     const update: TelegramUpdate = {
@@ -140,7 +144,7 @@ test("Webhook handler", async () => {
   });
 
   test("parses message.document", async () => {
-    const routeHandler = createWebhookHandler(mockConfig, mockRouter);
+    const routeHandler = createWebhookHandler(mockConfig, mockBot, mockRouter);
     receivedMessages = [];
 
     const update: TelegramUpdate = {
@@ -179,7 +183,7 @@ test("Webhook handler", async () => {
       },
     };
 
-    const handler = createWebhookHandler(mockConfig, slowRouter);
+    const handler = createWebhookHandler(mockConfig, mockBot, slowRouter);
 
     const update: TelegramUpdate = {
       update_id: 4,
@@ -212,7 +216,7 @@ test("Webhook handler", async () => {
       allowedChatIds: [99999],
     };
 
-    const handler = createWebhookHandler(whitelistedConfig, mockRouter);
+    const handler = createWebhookHandler(whitelistedConfig, mockBot, mockRouter);
     receivedMessages = [];
 
     const update: TelegramUpdate = {
@@ -239,7 +243,7 @@ test("Webhook handler", async () => {
   });
 
   test("handles edited_message", async () => {
-    const routeHandler = createWebhookHandler(mockConfig, mockRouter);
+    const routeHandler = createWebhookHandler(mockConfig, mockBot, mockRouter);
     receivedMessages = [];
 
     const update: TelegramUpdate = {
@@ -264,5 +268,128 @@ test("Webhook handler", async () => {
     assert.strictEqual(result.status, 200);
     assert.strictEqual(receivedMessages.length, 1);
     assert.strictEqual(receivedMessages[0].message.text, "Edited message");
+  });
+
+  test("callback_query: act:stop calls router.handleCallback", async () => {
+    let callbackCalls: Array<{ chatId: number; data: string }> = [];
+    const callbackRouter = {
+      routeMessage: async () => {},
+      handleCallback: async (chatId: number, data: string) => {
+        callbackCalls.push({ chatId, data });
+      },
+    };
+
+    let answeredCallbackIds: string[] = [];
+    const callbackBot = {
+      answerCallbackQuery: async (callbackQueryId: string, text?: string) => {
+        answeredCallbackIds.push(callbackQueryId);
+      },
+    };
+
+    const routeHandler = createWebhookHandler(mockConfig, callbackBot, callbackRouter);
+
+    const update: TelegramUpdate = {
+      update_id: 10,
+      callback_query: {
+        id: "cb-123",
+        data: "act:stop",
+        from: { id: 12345 },
+        message: { message_id: 1, chat: { id: 12345 } },
+      },
+    };
+
+    const result = await callWebhookHandler(routeHandler, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-telegram-bot-api-secret-token": "my-secret-token",
+      },
+      body: JSON.stringify(update),
+    });
+
+    assert.strictEqual(result.status, 200);
+    assert.strictEqual(callbackCalls.length, 1);
+    assert.strictEqual(callbackCalls[0].chatId, 12345);
+    assert.strictEqual(callbackCalls[0].data, "act:stop");
+    assert.strictEqual(answeredCallbackIds.length, 1);
+    assert.strictEqual(answeredCallbackIds[0], "cb-123");
+  });
+
+  test("callback_query: act:new calls router.handleCallback", async () => {
+    let callbackCalls: Array<{ chatId: number; data: string }> = [];
+    const callbackRouter = {
+      routeMessage: async () => {},
+      handleCallback: async (chatId: number, data: string) => {
+        callbackCalls.push({ chatId, data });
+      },
+    };
+
+    const callbackBot = {
+      answerCallbackQuery: async (_callbackQueryId: string, _text?: string) => {},
+    };
+
+    const routeHandler = createWebhookHandler(mockConfig, callbackBot, callbackRouter);
+
+    const update: TelegramUpdate = {
+      update_id: 11,
+      callback_query: {
+        id: "cb-456",
+        data: "act:new",
+        from: { id: 12345 },
+        message: { message_id: 2, chat: { id: 12345 } },
+      },
+    };
+
+    const result = await callWebhookHandler(routeHandler, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-telegram-bot-api-secret-token": "my-secret-token",
+      },
+      body: JSON.stringify(update),
+    });
+
+    assert.strictEqual(result.status, 200);
+    assert.strictEqual(callbackCalls.length, 1);
+    assert.strictEqual(callbackCalls[0].data, "act:new");
+  });
+
+  test("callback_query: unknown data calls router.handleCallback with fallback", async () => {
+    let callbackCalls: Array<{ chatId: number; data: string }> = [];
+    const callbackRouter = {
+      routeMessage: async () => {},
+      handleCallback: async (chatId: number, data: string) => {
+        callbackCalls.push({ chatId, data });
+      },
+    };
+
+    const callbackBot = {
+      answerCallbackQuery: async (_callbackQueryId: string, _text?: string) => {},
+    };
+
+    const routeHandler = createWebhookHandler(mockConfig, callbackBot, callbackRouter);
+
+    const update: TelegramUpdate = {
+      update_id: 12,
+      callback_query: {
+        id: "cb-789",
+        data: "ws:3",
+        from: { id: 12345 },
+        message: { message_id: 3, chat: { id: 12345 } },
+      },
+    };
+
+    const result = await callWebhookHandler(routeHandler, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-telegram-bot-api-secret-token": "my-secret-token",
+      },
+      body: JSON.stringify(update),
+    });
+
+    assert.strictEqual(result.status, 200);
+    assert.strictEqual(callbackCalls.length, 1);
+    assert.strictEqual(callbackCalls[0].data, "ws:3");
   });
 });

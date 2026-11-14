@@ -85,6 +85,18 @@ export interface Router {
 
   /** List persisted sessions for the chat's selected workspace (for /list command). */
   listWorkspaceSessions(chatId: number): Promise<{ text: string }>;
+
+  /** Handle an inline button callback from Telegram. */
+  handleCallback(chatId: number, data: string): Promise<{ text?: string }>;
+}
+
+/** Minimal shape of a persisted session entry. */
+interface PersistedSession {
+  sessionId: string;
+  title?: string;
+  cwd: string;
+  createdAt: string;            // ISO timestamp
+  eventCount?: number;
 }
 
 interface RouterContext {
@@ -94,14 +106,6 @@ interface RouterContext {
   cwd?: string;
   /** Optional workspace registry (may be absent in profiles without workspaces). */
   workspaceRegistry?: unknown;
-  /** Minimal shape of a persisted session entry. */
-  export interface PersistedSession {
-    sessionId: string;
-    title?: string;
-    cwd: string;
-    createdAt: string;            // ISO timestamp
-    eventCount?: number;
-  }
 
   /** Optional session persistence service (may be absent). */
   sessionPersistence?: {
@@ -114,7 +118,7 @@ interface RouterContext {
 
 export function createRouter(
   bot: {
-    sendText: (chatId: number | string, text: string) => Promise<unknown>;
+    sendText: (chatId: number | string, text: string, extra?: Record<string, unknown>) => Promise<unknown>;
   },
   ctx: RouterContext,
 ): Router {
@@ -168,7 +172,7 @@ export function createRouter(
           getStatus: (cid: number) => router.getStatus(cid),
           listWorkspaceSessions: (cid: number) => router.listWorkspaceSessions(cid),
         });
-        if (result.text) await reply(chatId, result.text);
+        if (result.text) await reply(chatId, result.text, result.reply_markup);
         return;
       }
 
@@ -345,7 +349,7 @@ export function createRouter(
 
       const lines = shown.map((s) => {
         const marker = s.sessionId === currentSessionId ? "▶ " : "  ";
-        const shortId = s.sessionId.slice(0, 8);
+        const shortId = s.sessionId;
         const created = new Date(s.createdAt);
         const timeStr = formatTime(created);
         const eventInfo = s.eventCount != null ? ` (${s.eventCount} events)` : "";
@@ -358,6 +362,19 @@ export function createRouter(
       }
 
       return { text };
+    },
+
+    async handleCallback(chatId: number, data: string): Promise<{ text?: string }> {
+      if (data === "act:stop") {
+        const stopped = await this.stop(chatId);
+        return stopped
+          ? { text: "⏹ Генерация остановлена." }
+          : { text: "⏹ Нечего останавливать." };
+      }
+      if (data === "act:new") {
+        return await this.createNewSession(chatId);
+      }
+      return { text: "⚠️ Кнопка устарела." };
     },
 
     handleSessionEvent(sessionId: string, event: SessionEventLike): void {
@@ -449,9 +466,9 @@ export function createRouter(
     return [...chatToSession].map(([chatId, sessionId]) => ({ chatId, sessionId }));
   }
 
-  async function reply(chatId: number, text: string): Promise<void> {
+  async function reply(chatId: number, text: string, replyMarkup?: unknown): Promise<void> {
     try {
-      await bot.sendText(chatId, text);
+      await bot.sendText(chatId, text, replyMarkup ? { reply_markup: replyMarkup } : {});
     } catch (err) {
       ctx.logger.error(`Failed to send message to chat ${chatId}: ${describe(err)}`);
     }

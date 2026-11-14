@@ -126,79 +126,37 @@ dsh-telegram/
 
 ---
 
-## 5. Текущее состояние (ошибка)
+## 5. Текущее состояние — ВСЕ ПОДЗАДАЧИ ВЫПОЛНЕНЫ ✅
 
-### ❌ Подзадача 6 остановлена с ошибкой компиляции
+> **Дата завершения:** текущая сессия
+> **Итог:** все 8 подзадач из BOT_COMMANDS.md реализованы, протестированы, документация обновлена.
 
-**Файл:** `src/server/router.ts`, строки 98–104
+### ✅ Подзадача 6 — `/list` сессий воркспейса
 
-Субагент подзадачи 6 добавил `export interface PersistedSession` **внутрь** `interface RouterContext`:
+**Файлы:** `src/server/router.ts` (метод `listWorkspaceSessions`), `src/server/commands.ts` (`case "list"`), `test/list.test.ts`
 
-```typescript
-interface RouterContext {
-  agents: Agents;
-  logger: { info(msg: string): void; error(msg: string): void };
-  cwd?: string;
-  workspaceRegistry?: unknown;
-  export interface PersistedSession {    // ← ОШИБКА: export внутри interface
-    sessionId: string;
-    title?: string;
-    cwd: string;
-    createdAt: string;
-    eventCount?: number;
-  }
-  sessionPersistence?: { ... };
-  get?(key: string): unknown;
-}
-```
+- Фильтрация по `cwd === workspacePath`
+- Сортировка по `createdAt` (новые сверху), лимит 10 + «…и ещё N»
+- Текущая сессия помечается `▶`
 
-**Ошибка компиляции:**
-```
-src/server/router.ts(98,3): error TS1131: Property or signature expected.
-src/server/router.ts(107,22): error TS1109: Expression expected.
-src/server/router.ts(109,5): error TS1005: ',' expected.
-src/server/router.ts(112,29): error TS1005: '=>' expected.
-src/server/router.ts(113,1): error TS1128: Declaration or statement expected.
-```
+### ✅ Подзадача 7 — Inline-кнопки
 
-**Как исправить:**
-1. Переместить `interface PersistedSession` на уровень выше (на уровень с `RouterContext`).
-2. Убрать `export` (он не нужен, интерфейс используется только внутри файла).
+**Файлы:** `src/server/telegram.ts` (`answerCallbackQuery`), `src/server/router.ts` (`handleCallback`), `src/server/commands.ts` (`buildInlineKeyboard`, `reply_markup`), `src/server/webhook.ts` (`callback_query` → `handleCallback`), `src/server/index.ts`, `test/webhook.test.ts`
+
+- `callback_query` → `router.handleCallback(chatId, data)` + `answerCallbackQuery`
+- Клавиатура для `/ws` (кнопка `🆕 New Chat`) и `/status` (`⏹ Stop`, `🆕 New`)
+- Протокол: `act:stop`, `act:new`, `ws:3` (неизвестные → "кнопка устарела")
+
+### ✅ Подзадача 8 — Документация и проверки
+
+- `README.md` обновлён: таблица команд, хранение состояния, структура
+- `npx tsc --noEmit` — ✅
+- `npm test` — 91/91 passed
+- `node build.js` — ✅
 
 ---
 
-## 6. Что нужно сделать дальше
-
-### Шаг 1: Исправить ошибку в router.ts
-
-Переместить `interface PersistedSession` из `RouterContext` на верхний уровень файла `router.ts`.
-
-### Шаг 2: Подзадача 6 — `/list` сессий воркспейса
-
-**Файлы:** `src/server/router.ts` (метод `listWorkspaceSessions` уже есть), `src/server/commands.ts` (нужно добавить case), `test/list.test.ts` (новый).
-
-Требования:
-- `sessionPersistence.list()` фильтруется по `header.cwd === state.workspacePath`.
-- Сортировка по `createdAt` (новые сверху), лимит 10 + «…и ещё N».
-- Текущая сессия помечается `▶`.
-- Команда `/list` в commands.ts.
-
-**Примечание:** Метод `listWorkspaceSessions` уже реализован в `router.ts` (строки 314–361). Нужно добавить обработку команды `/list` в `commands.ts` и написать тесты.
-
-### Шаг 3: Подзадача 7 — Inline-кнопки
-
-- `webhook.ts`: `callback_query` → `router.handleCallback(chatId, data)` вместо текста `Callback: <data>`.
-- Клавиатура: `reply_markup.inline_keyboard` для `/ws` и `/status`.
-- `data` — компактный протокол: `ws:<index>`, `act:stop`, `act:new` (64 байта).
-
-### Шаг 4: Подзадача 8 — Документация и проверки
-
-- Обновить `README.md`.
-- `npx tsc --noEmit`, `npm test`, `node build.js`, `pnpm install --force`, рестарт, `journalctl`.
-
----
-
-## 7. Ключевые паттерны проекта
+## 6. Ключевые паттерны проекта
 
 ### Создание сессии
 ```typescript
@@ -234,7 +192,7 @@ await bot.sendText(chatId, text);
 ```bash
 cd /home/dmitry/dsh_plugins/dsh-telegram
 npx tsc --noEmit          # типчекек
-npm test                   # все тесты (сейчас 87, должны стать 88+)
+npm test                   # все тесты (91)
 node build.js              # сборка
 ```
 

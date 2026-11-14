@@ -18,6 +18,10 @@ export interface AgentHandle {
         };
         followup(message: UserMessage): void;
         whenIdle(): Promise<void>;
+        cancel(options?: {
+            kind?: string;
+        }): void;
+        get status(): "idle" | "running";
     };
     dispose(): Promise<void>;
 }
@@ -70,6 +74,46 @@ export interface Router {
     handleSessionEvent(sessionId: string, event: SessionEventLike): void;
     /** Dispose every agent this router created */
     dispose(): Promise<void>;
+    /** List workspaces from the registry (for /ws command) */
+    listWorkspaces(): Array<{
+        index: number;
+        id: string;
+        path: string;
+        title: string;
+        sessionCount: number;
+    }>;
+    /** Resolve a workspace selector to { path } */
+    resolveWorkspace(selector: string): {
+        path: string;
+    };
+    /** Save workspace path for a chat (for /ws N command) */
+    saveWorkspacePath(chatId: number, path: string): void;
+    /** Create a new session in the chat's selected workspace. Returns reply text or error. */
+    createNewSession(chatId: number): Promise<{
+        text: string;
+    }>;
+    /** Stop the running agent for a chatId. Returns true if stopped, false otherwise. */
+    stop(chatId: number): Promise<boolean>;
+    /** Get status text for a chat's session (for /status command). */
+    getStatus(chatId: number): Promise<{
+        text: string;
+    }>;
+    /** List persisted sessions for the chat's selected workspace (for /list command). */
+    listWorkspaceSessions(chatId: number): Promise<{
+        text: string;
+    }>;
+    /** Handle an inline button callback from Telegram. */
+    handleCallback(chatId: number, data: string): Promise<{
+        text?: string;
+    }>;
+}
+/** Minimal shape of a persisted session entry. */
+interface PersistedSession {
+    sessionId: string;
+    title?: string;
+    cwd: string;
+    createdAt: string;
+    eventCount?: number;
 }
 interface RouterContext {
     agents: Agents;
@@ -79,9 +123,22 @@ interface RouterContext {
     };
     /** Absolute working directory for newly created sessions. */
     cwd?: string;
+    /** Optional workspace registry (may be absent in profiles without workspaces). */
+    workspaceRegistry?: unknown;
+    /** Optional session persistence service (may be absent). */
+    sessionPersistence?: {
+        stat?(sessionId: string): Promise<{
+            eventCount?: number;
+        }> | {
+            eventCount?: number;
+        };
+        list?(cwd?: string): Promise<PersistedSession[]> | PersistedSession[];
+    };
+    /** Alternative way to access services that may not be in inject. */
+    get?(key: string): unknown;
 }
 export declare function createRouter(bot: {
-    sendText: (chatId: number | string, text: string) => Promise<unknown>;
+    sendText: (chatId: number | string, text: string, extra?: Record<string, unknown>) => Promise<unknown>;
 }, ctx: RouterContext): Router;
 export {};
 //# sourceMappingURL=router.d.ts.map

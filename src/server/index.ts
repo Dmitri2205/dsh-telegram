@@ -401,6 +401,7 @@ export function apply(
       webhookSecret,
       allowedChatIds,
     },
+    bot,
     router,
   );
 

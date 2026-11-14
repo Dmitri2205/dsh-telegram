@@ -72,6 +72,13 @@ test("handleCommand", async () => {
     listSessions: (): Array<{ chatId: number; sessionId: string }> => [],
     createNewSession: async () => ({ text: "🆕 New session started. How can I help you?" }),
     stop: async (chatId: number) => false,
+    listWorkspaceSessions: async (chatId: number) => {
+      const sessions = mockRouter.listSessions();
+      if (sessions.length === 0) {
+        return { text: "Нет активных сессий. Используйте /new для создания." };
+      }
+      return { text: `📑 Active sessions (${sessions.length}):` };
+    },
   };
 
   test("/start creates new session", async () => {
@@ -103,9 +110,12 @@ test("handleCommand", async () => {
       { chatId: 12345, sessionId: "session-1" },
       { chatId: 67890, sessionId: "session-2" },
     ];
+    mockRouter.listWorkspaceSessions = async () => ({
+      text: "📑 Active sessions (2):\n\n1. session-1\n2. session-2",
+    });
 
     const result = await handleCommand("list", [], 12345, mockRouter);
-    assert.strictEqual(result.action, "list");
+    assert.strictEqual(result.action, "send");
     assert.ok(result.text!.includes("Active sessions (2)"));
     assert.ok(result.text!.includes("session-1"));
     assert.ok(result.text!.includes("session-2"));
@@ -113,10 +123,13 @@ test("handleCommand", async () => {
 
   test("/list shows empty when no sessions", async () => {
     mockRouter.listSessions = () => [];
+    mockRouter.listWorkspaceSessions = async () => ({
+      text: "Нет активных сессий. Используйте /new для создания.",
+    });
 
     const result = await handleCommand("list", [], 12345, mockRouter);
     assert.strictEqual(result.action, "send");
-    assert.ok(result.text!.includes("No active sessions"));
+    assert.ok(result.text!.includes("Нет активных сессий"));
   });
 
   test("unknown command returns error", async () => {

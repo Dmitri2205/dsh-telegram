@@ -72,11 +72,16 @@ export interface WebhookConfig {
  * Create a webhook handler for Telegram updates.
  * Validates the secret token, parses the update, and dispatches to the router.
  */
-export declare function createWebhookHandler(config: WebhookConfig, router: {
+export declare function createWebhookHandler(config: WebhookConfig, bot: {
+    answerCallbackQuery(callbackQueryId: string, text?: string): Promise<unknown>;
+}, router: {
     routeMessage(chatId: number, message: {
         text?: string;
         photo?: string[];
         document?: string;
     }): Promise<void>;
+    handleCallback(chatId: number, data: string): Promise<{
+        text?: string;
+    }>;
 }): (req: IncomingMessage, res: ServerResponse) => void | Promise<void>;
 //# sourceMappingURL=webhook.d.ts.map

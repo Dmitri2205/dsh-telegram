@@ -45,8 +45,12 @@ export interface WebhookConfig {
  */
 export function createWebhookHandler(
   config: WebhookConfig,
+  bot: {
+    answerCallbackQuery(callbackQueryId: string, text?: string): Promise<unknown>;
+  },
   router: {
     routeMessage(chatId: number, message: { text?: string; photo?: string[]; document?: string }): Promise<void>;
+    handleCallback(chatId: number, data: string): Promise<{ text?: string }>;
   },
 ): (req: IncomingMessage, res: ServerResponse) => void | Promise<void> {
   return async (req: IncomingMessage, res: ServerResponse) => {
@@ -85,7 +89,7 @@ export function createWebhookHandler(
     // Handle different update types. An escaping rejection would be answered by the
     // host's last-resort guard as an empty 400, hiding the real cause — so surface it.
     try {
-      await dispatchUpdate(body, router, config.allowedChatIds);
+      await dispatchUpdate(body, router, bot, config.allowedChatIds);
     } catch (err) {
       const detail = err instanceof Error ? (err.stack ?? err.message) : String(err);
       res.writeHead(500, { "Content-Type": "application/json" });
@@ -103,6 +107,10 @@ async function dispatchUpdate(
   body: TelegramUpdate,
   router: {
     routeMessage(chatId: number, message: { text?: string; photo?: string[]; document?: string }): Promise<void>;
+    handleCallback(chatId: number, data: string): Promise<{ text?: string }>;
+  },
+  bot: {
+    answerCallbackQuery(callbackQueryId: string, text?: string): Promise<unknown>;
   },
   allowedChatIds?: number[],
 ): Promise<void> {
@@ -111,15 +119,18 @@ async function dispatchUpdate(
     } else if (body.edited_message) {
       await handleMessage(body.edited_message, router, allowedChatIds);
     } else if (body.callback_query) {
-      // Handle callback queries
-      if (body.callback_query.message && "chat" in body.callback_query.message) {
-        const chatId = body.callback_query.message.chat.id;
+      // Handle callback queries from inline buttons
+      const cb = body.callback_query;
+      if (cb.message && "chat" in cb.message) {
+        const chatId = cb.message.chat.id;
         if (isAllowed(chatId, allowedChatIds)) {
-          await router.routeMessage(chatId, {
-            text: `Callback: ${body.callback_query.data}`,
-          });
+          await router.handleCallback(chatId, cb.data);
         }
       }
+      // Always answer the callback query to dismiss the spinner on the client
+      try {
+        await bot.answerCallbackQuery(cb.id);
+      } catch {}
     } else {
       // Unknown update type — ignore
     }

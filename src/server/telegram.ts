@@ -226,6 +226,20 @@ export class TelegramBot {
   async getFile(fileId: string): Promise<{ file_path: string }> {
     return this.request("getFile", { file_id: fileId });
   }
+
+  async answerCallbackQuery(
+    callbackQueryId: string,
+    text?: string,
+    options?: { show_alert?: boolean; url?: string },
+  ): Promise<unknown> {
+    const body: Record<string, unknown> = { callback_query_id: callbackQueryId };
+    if (text) body.text = text;
+    if (options) {
+      if (options.show_alert !== undefined) body.show_alert = options.show_alert;
+      if (options.url) body.url = options.url;
+    }
+    return this.request("answerCallbackQuery", body);
+  }
 }
 
 interface TelegramResponse<T> {

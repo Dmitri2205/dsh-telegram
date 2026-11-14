@@ -1,3 +1,16 @@
+/** Inline keyboard button for Telegram reply_markup. */
+export interface InlineKeyboardButton {
+  text: string;
+  callback_data: string;
+}
+
+/** Build a single-row inline keyboard from buttons. */
+export function buildInlineKeyboard(
+  buttons: Array<InlineKeyboardButton>,
+): { inline_keyboard: Array<Array<InlineKeyboardButton>> } {
+  return { inline_keyboard: [buttons] };
+}
+
 /**
  * Parse a command string like "/start args" into { command, args }.
  * Returns null if the text doesn't start with a command.
@@ -33,7 +46,7 @@ export async function handleCommand(
     getStatus(chatId: number): Promise<{ text: string }>;
     listWorkspaceSessions(chatId: number): Promise<{ text: string }>;
   },
-): Promise<{ action: "send" | "new_session" | "list"; text?: string }> {
+): Promise<{ action: "send" | "new_session" | "list"; text?: string; reply_markup?: unknown }> {
   switch (command) {
     case "start": {
       router.newSession(chatId);
@@ -95,6 +108,9 @@ export async function handleCommand(
         return {
           action: "send",
           text: "Нет доступных воркспейсов",
+          reply_markup: buildInlineKeyboard([
+            { text: "🆕 New Chat", callback_data: "act:new" },
+          ]),
         };
       }
       // args[0] is the selector (number or path)
@@ -108,6 +124,9 @@ export async function handleCommand(
         return {
           action: "send",
           text: `📂 Воркспейсы (${workspaces.length}):\n\n${lines.join("\n")}`,
+          reply_markup: buildInlineKeyboard([
+            { text: "🆕 New Chat", callback_data: "act:new" },
+          ]),
         };
       }
       // Selector provided — resolve and save
@@ -117,12 +136,20 @@ export async function handleCommand(
         return {
           action: "send",
           text: `✅ Воркспейс выбран: ${resolved.path}`,
+          reply_markup: buildInlineKeyboard([
+            { text: "⏹ Stop", callback_data: "act:stop" },
+            { text: "🆕 New", callback_data: "act:new" },
+          ]),
         };
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         return {
           action: "send",
           text: msg,
+          reply_markup: buildInlineKeyboard([
+            { text: "⏹ Stop", callback_data: "act:stop" },
+            { text: "🆕 New", callback_data: "act:new" },
+          ]),
         };
       }
     }
@@ -147,6 +174,10 @@ export async function handleCommand(
       return {
         action: "send",
         text: result.text,
+        reply_markup: buildInlineKeyboard([
+          { text: "⏹ Stop", callback_data: "act:stop" },
+          { text: "🆕 New", callback_data: "act:new" },
+        ]),
       };
     }
 
