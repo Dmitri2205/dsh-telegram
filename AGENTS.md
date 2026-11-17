@@ -1,7 +1,7 @@
 # AGENTS.md — Руководство для агентов-оркестраторов
 
-> **Дата последнего обновления:** текущая сессия
-> **Статус:** на паузе после подзадачи 5. Требуется исправление + продолжение с подзадачи 6.
+> **Дата последнего обновления:** 16.11.2026
+> **Статус:** подзадачи 1–8 реализованы (`tsc` чистый, 91/91 тестов). Открытые дефекты рантайма и план доделок — в `FIXES.md`.
 
 ---
 
@@ -57,7 +57,7 @@ dsh-telegram/
 
 Ключевые правила:
 - `export const name`, `export const inject`, `export function apply` — **никакого `export default`**.
-- Необязательные сервисы — через `ctx.get(...)`, не через `ctx.<name>`.
+- Необязательные сервисы — через `ctx.get(...)`, не через `ctx.<name>`. Сервис из `inject` (например `workspaceRegistry`) читается напрямую: `ctx.workspaceRegistry`.
 - `kind` обязателен в `register({ kind, path, handler })`.
 - Секреты — в `~/.dsh/<плагин>-settings.json` (0o600), не в `cordis.patch.yml`.
 - Сборка: `npx tsc --noEmit && npm test` → `node build.js` → `pnpm install --force` → рестарт → `journalctl`.
@@ -130,6 +130,10 @@ dsh-telegram/
 
 > **Дата завершения:** текущая сессия
 > **Итог:** все 8 подзадач из BOT_COMMANDS.md реализованы, протестированы, документация обновлена.
+>
+> ⚠️ **Открытые дефекты рантайма:** обычные сообщения падают с «Failed to process your message» после `/new`;
+> `/list` и `/status` не видят persistence; кнопки не отвечают в чат. Полный список, причины с `файл:строка`
+> и планы правок — в `FIXES.md` (пункты 2–9). Зелёные тесты эти пути не покрывают: они мокают `agents` и `sessionPersistence`.
 
 ### ✅ Подзадача 6 — `/list` сессий воркспейса
 
@@ -166,6 +170,9 @@ const handle = await ctx.agents.create({
 });
 // ...
 wsEntry.attachSession(handle.agent.session.id);
+// ОБЯЗАТЕЛЬНО: handle живого агента надо положить в кэш, иначе следующее
+// сообщение уйдёт в resume() по живой сессии и упадёт с SessionAlreadyOwnedError
+chatToAgent.set(chatId, handle);
 ```
 
 ### Остановка сессии
@@ -203,6 +210,7 @@ node build.js              # сборка
 - Не переписывать `state.ts` — он уже реализован и протестирован.
 - Не трогать `telegram.ts` и `webhook.ts` без необходимости.
 - Не добавлять `export default` в `index.ts`.
-- Не использовать `ctx.workspaceRegistry` без `ctx.get("workspaceRegistry")` (сервис может отсутствовать).
+- Не использовать `ctx.<service>` для сервисов, которых нет в `inject` (`sessionPersistence`, `credentials`) — только `ctx.get("...")`; иначе Cordis бросит `cannot get property "..." without inject`.
+- Не вызывать `ctx.agents.resume()` по сессии, которая уже живёт в процессе: `persistence.open(id, 'write')` упадёт с `SessionAlreadyOwnedError`. Сначала `ctx.agents.get(sessionId)` (см. `FIXES.md`, пункт 2).
 - Не забывать `kind: "exact" | "prefix"` в `ctx.webServer.register()`.
 - Не писать токены в логи.

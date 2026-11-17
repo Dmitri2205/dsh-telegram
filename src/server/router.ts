@@ -31,9 +31,17 @@ export interface AgentHandle {
  * `ctx.agents` from dsh-agent. Creation is identity-driven: the caller passes
  * the session id it wants, and the handle owns the agent until disposed.
  */
+export interface AgentOptions {
+  provider?: string;
+  model?: string;
+  reasoningEffort?: string;
+  maxTokens?: number;
+}
+
 export interface Agents {
-  create(options: { sessionId: string; meta?: { cwd?: string } }): Promise<AgentHandle>;
-  resume(options: { resumeSessionId: string }): Promise<AgentHandle>;
+  create(options: { sessionId: string; meta?: { cwd?: string }; agentOptions?: AgentOptions }): Promise<AgentHandle>;
+  resume(options: { resumeSessionId: string; agentOptions?: AgentOptions }): Promise<AgentHandle>;
+  get?(sessionId: string): AgentHandle["agent"] | undefined;
 }
 
 /** Shape of the `session/event` payload we care about. */
@@ -99,9 +107,13 @@ interface PersistedSession {
   eventCount?: number;
 }
 
+interface AgentDefaultModel {
+  currentSelection(): { provider: string; model: string; reasoningEffort?: string };
+}
+
 interface RouterContext {
   agents: Agents;
-  logger: { info(msg: string): void; error(msg: string): void };
+  logger: { info(msg: string): void; error(msg: string): void; warn(msg: string): void };
   /** Absolute working directory for newly created sessions. */
   cwd?: string;
   /** Optional workspace registry (may be absent in profiles without workspaces). */
@@ -112,8 +124,22 @@ interface RouterContext {
     stat?(sessionId: string): Promise<{ eventCount?: number }> | { eventCount?: number };
     list?(cwd?: string): Promise<PersistedSession[]> | PersistedSession[];
   };
+  /** Optional agent default model service (may be absent). */
+  agentDefaultModel?: AgentDefaultModel;
   /** Alternative way to access services that may not be in inject. */
   get?(key: string): unknown;
+}
+
+/** Resolve agentOptions from the global default model service. */
+function resolveAgentOptions(ctx: RouterContext): AgentOptions | undefined {
+  const dm = ctx.agentDefaultModel;
+  if (!dm) return undefined;
+  try {
+    const sel = dm.currentSelection();
+    return sel.provider || sel.model ? { provider: sel.provider, model: sel.model, reasoningEffort: sel.reasoningEffort } : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 export function createRouter(
@@ -137,26 +163,40 @@ export function createRouter(
     // Determine cwd: per-chat workspacePath > router-level cwd > process.cwd()
     const state = loadChatState(chatId);
     const agentCwd = state.workspacePath ?? ctx.cwd ?? process.cwd();
+    ctx.logger.info(`ensureAgent: chatId=${chatId}, sessionId=${sessionId || 'none'}, agentCwd=${agentCwd}`);
 
-    const handle = sessionId
-      ? await ctx.agents.resume({ resumeSessionId: sessionId })
-      : await ctx.agents.create({
-          sessionId: `telegram-${chatId}-${randomUUID()}`,
-          meta: { cwd: agentCwd },
-        });
+    try {
+      // Check if there's a live agent for this session (created by createNewSession but not cached)
+      const live = sessionId ? ctx.agents.get?.(sessionId) : undefined;
+      const handle: AgentHandle = live
+        ? { agent: live, dispose: async () => {} }
+        : sessionId
+          ? await ctx.agents.resume({ resumeSessionId: sessionId })
+          : await ctx.agents.create({
+              sessionId: `telegram-${chatId}-${randomUUID()}`,
+              meta: { cwd: agentCwd },
+              agentOptions: resolveAgentOptions(ctx),
+            });
 
-    chatToAgent.set(chatId, handle);
-    chatToSession.set(chatId, handle.agent.session.id);
-    ctx.logger.info(
-      `${sessionId ? "Resumed" : "Created"} session ${handle.agent.session.id} for chat ${chatId}`,
-    );
-    return handle;
+      if (!live) {
+        chatToAgent.set(chatId, handle);
+      }
+      chatToSession.set(chatId, handle.agent.session.id);
+      ctx.logger.info(
+        `${sessionId ? "Resumed" : "Created"} session ${handle.agent.session.id} for chat ${chatId}`,
+      );
+      return handle;
+    } catch (err) {
+      ctx.logger.error(`ensureAgent failed for chat ${chatId}: ${describe(err)}\n${err instanceof Error ? (err.stack || '') : ''}`);
+      throw err;
+    }
   }
 
   const router = {
     async routeMessage(chatId: number, message: { text?: string; photo?: string[]; document?: string }): Promise<void> {
       const text = message.text?.trim();
       if (!text) return;
+      ctx.logger.info(`routeMessage called: chatId=${chatId}, text=${text.slice(0, 100)}`);
 
       // Commands are answered locally: they must not consume a turn of the agent.
       const parsed = parseCommand(text);
@@ -180,7 +220,7 @@ export function createRouter(
       try {
         handle = await ensureAgent(chatId);
       } catch (err) {
-        ctx.logger.error(`Failed to create/resume agent for chat ${chatId}: ${describe(err)}`);
+        ctx.logger.error(`Failed to create/resume agent for chat ${chatId}: ${describe(err)}\n${err instanceof Error ? (err.stack || '') : ''}`);
         await reply(chatId, "⚠️ Failed to process your message. Please try again or use /new to start a fresh session.");
         return;
       }
@@ -198,7 +238,7 @@ export function createRouter(
         });
         await handle.agent.whenIdle();
       } catch (err) {
-        ctx.logger.error(`Agent submission failed for chat ${chatId}: ${describe(err)}`);
+        ctx.logger.error(`Agent submission failed for chat ${chatId}: ${describe(err)}\n${err instanceof Error ? (err.stack || '') : ''}`);
         await reply(chatId, "⚠️ An error occurred while processing your message. Please try again.");
         return;
       } finally {
@@ -324,13 +364,17 @@ export function createRouter(
 
       // Get persisted sessions filtered by workspace cwd
       let persisted: PersistedSession[] = [];
-      try {
-        const listFn = ctx.sessionPersistence?.list;
-        if (typeof listFn === "function") {
-          persisted = await listFn(workspacePath);
+      if (!ctx.sessionPersistence) {
+        ctx.logger.warn("sessionPersistence not available — /list and /status will return empty data");
+      } else {
+        try {
+          const listFn = ctx.sessionPersistence.list;
+          if (typeof listFn === "function") {
+            persisted = await listFn(workspacePath);
+          }
+        } catch {
+          // persistence may not be available — fall back to in-memory
         }
-      } catch {
-        // persistence may not be available — fall back to in-memory
       }
 
       // Filter by cwd, sort newest first
@@ -429,10 +473,22 @@ export function createRouter(
     const sessionId = `telegram-${chatId}-${randomUUID()}`;
 
     try {
+      // Clean up stale agent handle for this chat (if /new was called without /stop first)
+      const stale = chatToAgent.get(chatId);
+      if (stale) {
+        chatToAgent.delete(chatId);
+        await stale.dispose().catch((err: unknown) => {
+          ctx.logger.error(`Failed to dispose stale agent for chat ${chatId}: ${describe(err)}`);
+        });
+      }
+
       const handle = await ctx.agents.create({
         sessionId,
         meta: { cwd: workspacePath },
+        agentOptions: resolveAgentOptions(ctx),
       });
+
+      chatToAgent.set(chatId, handle);
 
       const actualSessionId = handle.agent.session.id;
 

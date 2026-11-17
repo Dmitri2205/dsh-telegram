@@ -10,7 +10,7 @@ import { createWebhookHandler } from "./webhook.js";
 import { createRouter } from "./router.js";
 
 export const name = "telegram-bot";
-export const inject = ["agents", "webServer"];
+export const inject = ["agents", "webServer", "workspaceRegistry"];
 
 /** Settings page route. Registered unconditionally so the UI works before a token exists. */
 export const SETTINGS_PATH = "/telegram/api/settings";
@@ -272,6 +272,8 @@ export function apply(
     webServer: WebServer;
     agents: Agents;
     credentials?: Credentials;
+    workspaceRegistry?: unknown;
+    get?(key: string): unknown;
     on?: (event: "session/event", handler: (session: { id: string }, event: unknown) => void) => () => void;
     logger?: { info(msg: string): void; error(msg: string): void; warn(msg: string): void; debug(msg: string): void };
   },
@@ -375,7 +377,9 @@ export function apply(
     agents: ctx.agents,
     logger,
     cwd: process.cwd(),
-    workspaceRegistry: (ctx as { get?(key: string): unknown } | undefined)?.get?.("workspaceRegistry"),
+    workspaceRegistry: ctx.workspaceRegistry,
+    sessionPersistence: ctx.get?.("sessionPersistence") as any,
+    agentDefaultModel: ctx.get?.("agentDefaultModel") as any,
   });
 
   // Durable session events are how the assistant's answer reaches us: the loop

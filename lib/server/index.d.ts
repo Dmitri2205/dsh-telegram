@@ -106,6 +106,8 @@ export declare function apply(ctx: {
     webServer: WebServer;
     agents: Agents;
     credentials?: Credentials;
+    workspaceRegistry?: unknown;
+    get?(key: string): unknown;
     on?: (event: "session/event", handler: (session: {
         id: string;
     }, event: unknown) => void) => () => void;

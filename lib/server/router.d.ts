@@ -29,16 +29,25 @@ export interface AgentHandle {
  * `ctx.agents` from dsh-agent. Creation is identity-driven: the caller passes
  * the session id it wants, and the handle owns the agent until disposed.
  */
+export interface AgentOptions {
+    provider?: string;
+    model?: string;
+    reasoningEffort?: string;
+    maxTokens?: number;
+}
 export interface Agents {
     create(options: {
         sessionId: string;
         meta?: {
             cwd?: string;
         };
+        agentOptions?: AgentOptions;
     }): Promise<AgentHandle>;
     resume(options: {
         resumeSessionId: string;
+        agentOptions?: AgentOptions;
     }): Promise<AgentHandle>;
+    get?(sessionId: string): AgentHandle["agent"] | undefined;
 }
 /** Shape of the `session/event` payload we care about. */
 export interface SessionEventLike {
@@ -115,11 +124,19 @@ interface PersistedSession {
     createdAt: string;
     eventCount?: number;
 }
+interface AgentDefaultModel {
+    currentSelection(): {
+        provider: string;
+        model: string;
+        reasoningEffort?: string;
+    };
+}
 interface RouterContext {
     agents: Agents;
     logger: {
         info(msg: string): void;
         error(msg: string): void;
+        warn(msg: string): void;
     };
     /** Absolute working directory for newly created sessions. */
     cwd?: string;
@@ -134,6 +151,8 @@ interface RouterContext {
         };
         list?(cwd?: string): Promise<PersistedSession[]> | PersistedSession[];
     };
+    /** Optional agent default model service (may be absent). */
+    agentDefaultModel?: AgentDefaultModel;
     /** Alternative way to access services that may not be in inject. */
     get?(key: string): unknown;
 }
