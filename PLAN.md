@@ -7,7 +7,7 @@
 - Плагин устанавливается через `plugin_manager install_bundle`
 - Бот принимает сообщения от пользователей, передаёт их агенту, возвращает ответ
 - Покрытие тестами: маршруты webhook, маршрутизация сообщений, маппинг чатов, обработка медиа, команды
-- Все тесты проходят: `node --test test/*.test.ts`
+- Все тесты проходят: `tsx --test test/**/*.test.ts`
 
 ---
 
@@ -179,7 +179,7 @@ export function apply(ctx, config) {
   },
   "scripts": {
     "build": "tsc",
-    "test": "node --test test/*.test.ts",
+    "test": "tsx --test test/**/*.test.ts",
     "prepublishOnly": "npm run build"
   },
   "peerDependencies": { "@deepseek-ai/cordis": "^4.0.1" },

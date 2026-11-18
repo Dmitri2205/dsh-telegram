@@ -52,7 +52,7 @@ workspaceRegistry: (ctx as { get?(key: string): unknown } | undefined)?.get?.("w
 
 ## 2. P1 — «⚠️ Failed to process your message» на любом обычном сообщении
 
-**Статус:** ❌ открыто (причина найдена, правка не внесена)
+**Статус:** ✅ исправлено (боевой запуск подтверждён 2026-11-16)
 
 ### Проблема
 `/ws` и `/new` работают. Любое обычное текстовое сообщение после них бот отвечает
@@ -123,7 +123,7 @@ write-ownership: `persistence.open(id, 'write')` (`/home/dmitry/deepseek-harness
 - `npx tsc --noEmit` — ✅ прошёл (exit code 0)
 - `npm test` — ✅ 91/91 тестов прошли (exit code 0)
 - `node build.js` — ✅ сборка прошла успешно
-
+- Боевой запуск (2026-11-16): /new → текст → агент отвечает моделью (не «Failed…»).
 ---
 
 ## 3. P1 — `/list` и `/status` всегда показывают пустые данные
@@ -309,6 +309,39 @@ _(заполняется после правки)_
 
 ### Решение
 _(заполняется после правки)_
+
+---
+
+## 10. Агент создавался без учёта глобальной модели
+
+**Дата:** текущая сессия
+**Статус:** ✅ исправлено
+
+### Проблема
+`ctx.agents.create()` вызывался без `agentOptions` — сессии стартовали не с
+глобально выбранной моделью, а с дефолтом харнесса.
+
+### Решение
+2 файла:
+
+1. **`src/server/router.ts`** — тип `AgentOptions` (строка 34) и `AgentDefaultModel`
+   (строка 110); функция `resolveAgentOptions(ctx)` (строки 134-143) читает
+   `provider`/`model`/`reasoningEffort` из `agentDefaultModel.currentSelection()`.
+   Оба вызова `ctx.agents.create()` теперь передают
+   `agentOptions: resolveAgentOptions(ctx)`: `ensureAgent` (строка 178) и
+   `createNewSession` (строка 488).
+2. **`src/server/index.ts:382`** — сервис прокинут в роутер:
+   `agentDefaultModel: ctx.get?.("agentDefaultModel") as any`
+   (необязательный сервис — через `ctx.get`, не в `inject`).
+
+Одна точка истины: `model`/`provider` читаются из
+`agentDefaultModel.currentSelection()` ровно в одном месте
+(`resolveAgentOptions`), дублирования нет. Сервиса нет или ошибка чтения →
+`agentOptions: undefined` (поведение как до правки).
+
+### Критерий приёмки
+- Сессии из `ensureAgent` (первое обычное сообщение) и из `/new` создаются с
+  `agentOptions`, соответствующим текущему выбору модели.
 
 ---
 
