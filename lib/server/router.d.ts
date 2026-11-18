@@ -123,6 +123,12 @@ interface PersistedSession {
     cwd: string;
     createdAt: string;
     eventCount?: number;
+    /** Runtime persistence snapshot (may be absent in some profiles). */
+    header?: {
+        id?: string;
+        cwd?: string;
+        createdAt?: string;
+    };
 }
 interface AgentDefaultModel {
     currentSelection(): {

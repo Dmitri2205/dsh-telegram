@@ -105,6 +105,8 @@ interface PersistedSession {
   cwd: string;
   createdAt: string;            // ISO timestamp
   eventCount?: number;
+  /** Runtime persistence snapshot (may be absent in some profiles). */
+  header?: { id?: string; cwd?: string; createdAt?: string };
 }
 
 interface AgentDefaultModel {
@@ -377,10 +379,15 @@ export function createRouter(
         }
       }
 
-      // Filter by cwd, sort newest first
-      const filtered = persisted
-        .filter((s) => s.cwd === workspacePath)
-        .sort((a, b) => (b.createdAt > a.createdAt ? 1 : -1));
+      // Normalize runtime snapshots ({header,...}) and plain entries to PersistedSession
+      const mapped = (persisted ?? []).map((s) => {
+        const header = typeof s === "object" && s !== null && s.header ? s.header : undefined;
+        const base = (header ? { sessionId: header.id, createdAt: header.createdAt, cwd: header.cwd } : {});
+        return { ...base, ...(typeof s === "object" && s !== null ? s : {}) };
+      });
+      const filtered = (mapped as PersistedSession[]).filter((s) => s.cwd === workspacePath);
+
+
 
       const currentSessionId = chatToSession.get(chatId) ?? state.sessionId;
       const LIMIT = 10;

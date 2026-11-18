@@ -378,7 +378,7 @@ export function apply(
     logger,
     cwd: process.cwd(),
     workspaceRegistry: ctx.workspaceRegistry,
-    sessionPersistence: ctx.get?.("sessionPersistence") as any,
+    sessionPersistence: ctx.get?.("session-persistence-jsonl") as any,
     agentDefaultModel: ctx.get?.("agentDefaultModel") as any,
   });
 

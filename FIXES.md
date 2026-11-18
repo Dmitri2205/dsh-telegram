@@ -155,13 +155,18 @@ write-ownership: `persistence.open(id, 'write')` (`/home/dmitry/deepseek-harness
 - `/status` показывает ненулевой `eventCount` для сессии, где уже были ходы.
 
 ### Решение
-_(заполняется после правки)_
+1 правка в `src/server/index.ts:381` — маппинг ключа persistence из боевого runtime:
+```typescript
+sessionPersistence: ctx.get?.("session-persistence-jsonl") as any,
+```
+Раньше читался `ctx.get("sessionPersistence")` (camelCase), но в боевом runtime сервис инжектится под id `include:session-persistence-jsonl` (`~/.dsh/logs/startup-2026-11-11*.log` — 46 упоминений `session-persistence-jsonl`, camelCase в логах не встречается). Тесты зелёные, потому что persistence замокан. В `router.ts` (`src/server/router.ts:367-371`) тип `ctx.sessionPersistence` и чтение `.list` остались без изменений.
+
+### Проверка
+- `npx tsc --noEmit` — ✅ нет ошибок
+- `npm test` — ✅ 91 тестов пройдено, 0 failed
+- `node build.js` — ✅ сборка завершена успешно
 
 ---
-
-## 4. P1 — ответ inline-кнопок не доходит в чат
-
-**Статус:** ✅ исправлено
 
 ### Проблема
 Нажатие `⏹ Stop` / `🆕 New` молча «проходит»: в чат не приходит «Генерация остановлена» / «Кнопка устарела».
@@ -192,6 +197,23 @@ if (result?.text) {
 }
 ```
 Раньше `handleCallback` вызывался и возвращаемый `{ text }` отбрасывался; индикатор `answerCallbackQuery(cb.id)` (`src/server/webhook.ts:135`) оставлен как «нажатие принято». Доставка через `router.routeMessage` (тот же путь, что и для `/new`/`/ws`), а не `bot.sendText` — итерфейс бота даёт один способ доставки в чат. Тексты формируются в `src/server/router.ts:415` («⏹ Генерация остановлена.») и `:421` («⚠️ Кнопка устарела.»).
+
+2 правка в `src/server/router.ts` — маппинг runtime persistence snapshot → PersistedSession.
+
+### Критерий приёмки
+- `/list` перечисляет сессии из боевого runtime (объект `{header,...}` от `@deepseek-ai/dsh-session-persistence-jsonl`).
+
+### Решение
+`list(workspacePath)` runtime возвращает `snapshots.push({ header, formatStatus, revision, sizeBytes })` — объект с полем `header`, а не `PersistedSession.cwd`. Router фильтровал `s.cwd === workspacePath` → всё отбрасывалось → «Сессий не найдено». Маппинг строки ~381:
+```typescript
+const mapped = (persisted ?? []).map((s) => {
+  const header = typeof s === "object" && s !== null && s.header ? s.header : undefined;
+  const base = header ? { sessionId: header.id, createdAt: header.createdAt, cwd: header.cwd } : {};
+  return { ...base, ...(typeof s === "object" && s !== null ? s : {}) };
+});
+const filtered = (mapped as PersistedSession[]).filter((s) => s.cwd === workspacePath);
+```
+`interface PersistedSession` (`src/server/router.ts:101-108`) получил опциональное поле `header?({id?,cwd?,createdAt?})` для компиляции маппинга. Mock-тесты (`test/list.test.ts`) подают plain-сессии `{sessionId,cwd,...}` — маппинг их пропускает через `...s`.
 
 ### Проверка
 - `npx tsc --noEmit` — ✅ exit 0
