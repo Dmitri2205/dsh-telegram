@@ -229,6 +229,76 @@ test("Router.listWorkspaceSessions — /list command", async () => {
     assert.ok(result.text.includes("(15)"), `Expected total count (15), got: ${result.text}`);
   }
 
+  // --- Test 7: runtime snapshot {header,...} maps to PersistedSession, filtered by cwd ---
+  {
+    setTestFile("t7.json");
+    clearChatsFile();
+    writeChatsFile(77777, "/tmp/ws7", "telegram-77777-active");
+
+    const now = new Date();
+    const runtimeSession = {
+      header: { id: "telegram-77777-active", cwd: "/tmp/ws7", createdAt: now.toISOString() },
+      sessionId: "telegram-77777-active",
+      cwd: "/tmp/ws7",
+      createdAt: now.toISOString(),
+      eventCount: 7,
+    };
+    const runtimeOther = {
+      header: { id: "telegram-88888-other", cwd: "/tmp/ws8", createdAt: now.toISOString() },
+      sessionId: "telegram-88888-other",
+      cwd: "/tmp/ws8",
+      createdAt: now.toISOString(),
+      eventCount: 3,
+    };
+
+    const ctx: any = {
+      agents: {
+        create: async () => ({
+          agent: { id: "s", session: { id: "s" } },
+          dispose: async () => {},
+        }),
+      },
+      sessionPersistence: {
+        list: async (_cwd?: string) => [runtimeSession, runtimeOther],
+      },
+      logger: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} },
+    };
+
+    const router = createRouter(mockBot, ctx);
+
+    const result = await (router as any).listWorkspaceSessions(77777);
+
+    assert.ok(result.text.includes("telegram-77777-active"), "Runtime header session should be listed");
+    assert.ok(!result.text.includes("88888"), "Session from other workspace should be excluded");
+    assert.ok(result.text.includes("7 events"), "Runtime header eventCount should be shown");
+  }
+
+  // --- Test 8: missing-persistence branch (sessionPersistence === undefined) does not crash ---
+  {
+    setTestFile("t8.json");
+    clearChatsFile();
+    writeChatsFile(88888, "/tmp/ws8", "telegram-88888-active");
+
+    const ctx: any = {
+      agents: {
+        create: async () => ({
+          agent: { id: "s", session: { id: "s" } },
+          dispose: async () => {},
+        }),
+      },
+      // sessionPersistence is intentionally absent
+      logger: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} },
+    };
+
+    const router = createRouter(mockBot, ctx);
+
+    const result = await (router as any).listWorkspaceSessions(88888);
+
+    // Should not throw; with no persistence → empty → "не найдено"
+    assert.ok(typeof result.text === "string", "Should return a text string");
+    assert.ok(result.text.includes("не найдено"), "Empty list should report not found");
+  }
+
   // --- Test 6: /list via routeMessage does not create agent ---
   {
     setTestFile("t6.json");
