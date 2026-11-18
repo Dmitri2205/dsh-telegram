@@ -124,7 +124,10 @@ async function dispatchUpdate(
       if (cb.message && "chat" in cb.message) {
         const chatId = cb.message.chat.id;
         if (isAllowed(chatId, allowedChatIds)) {
-          await router.handleCallback(chatId, cb.data);
+          const result = await router.handleCallback(chatId, cb.data);
+          if (result?.text) {
+            await router.routeMessage(chatId, { text: result.text });
+          }
         }
       }
       // Always answer the callback query to dismiss the spinner on the client
