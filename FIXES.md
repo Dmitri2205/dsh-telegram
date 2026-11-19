@@ -130,6 +130,9 @@ write-ownership: `persistence.open(id, 'write')` (`/home/dmitry/deepseek-harness
 
 **Статус:** ✅ исправлено
 
+> ⚠️ Решение, описанное ниже, оказалось **неверным** (ключ `session-persistence-jsonl` не существует).
+> Итоговая причина и правка — в пункте 11.
+
 ### Проблема
 В боевом режиме `/list` всегда отвечает «Сессий не найдено», `/status` всегда показывает «Событий: 0».
 
@@ -373,21 +376,120 @@ _(заполняется после правки)_
 (`resolveAgentOptions`), дублирования нет. Сервиса нет или ошибка чтения →
 `agentOptions: undefined` (поведение как до правки).
 
+### Дополнение 19.11.2026
+`agentDefaultModel` читался в `apply()` один раз — тот же латентный дефект, что у
+`sessionPersistence` (пункт 11): если сервис активируется позже, в роутер уходил `undefined`
+на весь процесс. Теперь оба сервиса передаются через ленивый `Proxy`
+(`src/server/index.ts`, `lazyService`), поэтому модель резолвится в момент `agents.create()`,
+а не при старте плагина.
+
 ### Критерий приёмки
 - Сессии из `ensureAgent` (первое обычное сообщение) и из `/new` создаются с
   `agentOptions`, соответствующим текущему выбору модели.
 
 ---
 
+## 11. `/list` пуст после `/ws`: неверный ключ сервиса + захват сервиса при `apply` (исправлено)
+
+**Дата:** 2026-11-18 (уточнено 2026-11-19)
+**Статус:** ✅ исправлено и проверено на живом рантайме (`/list` вернул 84 сессии)
+
+### Проблема
+После `/ws` `/list` отвечал «Сессий в ... не найдено», хотя на диске 84 сессии.
+
+### ⚠️ Поправка к первой разведке
+Первая версия этого пункта утверждала «код уже корректен, нужен рестарт рантайма». **Это неверно.**
+Ошибка была в трактовке startup-лога: `include:session-persistence-jsonl` — это **имя плагина**, а не ключ,
+под которым бэкенд регистрирует сервис.
+
+### Причин было две
+
+**1. Неверный ключ сервиса (коммит `35c6929`).**
+- База `SessionPersistence` в `/home/dmitry/deepseek-harness/packages/session/session-persistence/src/index.ts`
+  вызывает `super(ctx, 'sessionPersistence')` → сервис регистрируется под ключом **`sessionPersistence`**.
+- В `/home/dmitry/deepseek-harness/packages/session/session-persistence-jsonl/src/index.ts:293`
+  `override readonly name = 'session-persistence-jsonl'` лишь подменяет диагностическое имя; `:286` прямо
+  говорит «registered as `ctx.sessionPersistence`».
+- Весь харнесс читает сервис как `ctx.get('sessionPersistence')` / `ctx.sessionPersistence`
+  (например `packages/api/session-controller/src/index.ts:445`); `ctx.get('session-persistence-jsonl')`
+  не используется нигде.
+- Коммит `35c6929` поменял `src/server/index.ts:381` на `ctx.get?.("session-persistence-jsonl")` → сервис
+  **undefined** → `listWorkspaceSessions` уходит в ветку `if (!ctx.sessionPersistence)` → «Сессий не найдено».
+
+**2. Сервис читался один раз при `apply()` — раньше, чем бэкенд становился активным.**
+- `sessionPersistence` монтируется асинхронно: `packages/core/agent-loop/src/index.ts:411` монтирует его
+  через `ctx.inject(['sessionPersistence'], ...)`, а сам jsonl-бэкенд в `apply` делает `await service.await()`.
+- Плагин не объявляет сервис в `inject` (`export const inject = ["agents", "webServer", "workspaceRegistry"]`),
+  поэтому его `apply` может выполниться до активации бэкенда.
+- `ctx.get("sessionPersistence")` в этот момент → `undefined`, и это значение замирало на весь процесс.
+  Поэтому даже после исправления ключа `/list` оставался пустым до перезапуска с ленивым резолвом.
+
+### Почему тесты не ловили
+`test/list.test.ts` передаёт `sessionPersistence` **напрямую** в `RouterContext` и обходит `ctx.get(...)`.
+Поэтому 112/112 зелёные, но ни регрессию ключа, ни порядок активации сервисов они не видят.
+
+### Правка
+- `src/server/router.ts` — маппинг снапшотов `{header,...}` в `PersistedSession` (это было верно и осталось).
+- `src/server/index.ts` — вместо однократного `ctx.get(...)` сервисы передаются через ленивый `Proxy`,
+  который резолвит `ctx.get(name)` при каждом обращении (то есть уже в момент `/list`):
+```typescript
+const lazyService = (name: string): any => new Proxy({}, {
+  get(_target, prop) {
+    let svc: any;
+    try { svc = ctx.get?.(name) } catch { svc = undefined }
+    const value = svc?.[prop];
+    return typeof value === "function" ? value.bind(svc) : value;
+  },
+  has() { try { return !!ctx.get?.(name) } catch { return false } },
+});
+// ...
+sessionPersistence: lazyService("sessionPersistence"),
+agentDefaultModel: lazyService("agentDefaultModel"),
+```
+- Ошибка `list()` больше не глотается молча: пишется `logger.warn` с текстом исключения.
+- Пересборка `lib/` и установленного бандла (профиль — хардлинк на `lib/`), затем рестарт рантайма.
+
+### Как проверено
+- Временные маркеры в `apply` и `listWorkspaceSessions` (после проверки удалены) на живом процессе дали:
+  `hasPersistence: true`, `hasList: "function"`, `rawCount: 217`, `filteredCount: 84`, `error: null`.
+- `/list` в Telegram вернул «Сессий в ... (84)» с перечнем.
+- `tsx --test test/*.test.ts` — 112/112.
+
+### Остаётся
+- `list()` принимает `{signal?}`, а роутер передаёт строку `workspacePath` — безвредно, но лучше
+  передавать `undefined`/`{signal}` (отдельная мелочь).
+
+---
+
+## Уроки (для следующих агентов)
+
+1. **Имя плагина ≠ ключ сервиса.** `session-persistence-jsonl` — это `export const name` плагина;
+   сервис регистрируется как `super(ctx, 'sessionPersistence')`. Смотреть в исходники харнесса,
+   а не в startup-лог и не в `cordis.patch.yml`.
+2. **Необязательный сервис читать только лениво.** `ctx.get()` возвращает `undefined` молча, а
+   бэкенды с `await service.await()` активируются позже нашего `apply()`. Один `ctx.get` при
+   старте = `undefined` на весь процесс.
+3. **Зелёные тесты ≠ рабочий wiring.** `test/list.test.ts` подставляет сервис напрямую в
+   `RouterContext`, обходя `ctx.get`. Регрессии в `index.ts` такие тесты не видят.
+4. **Сначала докажи, что работает свежий код.** После `tsc` нужен рестарт; если симптом не
+   изменился — проверь время старта процесса и inode бандла, прежде чем менять логику.
+5. **Отлаживай маркерами в файл, а не догадками.** Одна строка `appendFileSync` с `pid` и
+   счётчиками дала точку отказа за один рестарт (`rawCount: 217`, `filteredCount: 84`).
+6. **Не «улучшай» ключ без доказательства.** Коммит `35c6929` поменял рабочий ключ на
+   несуществующий, опираясь на строку лога; это стоило двух сессий отладки.
+
+---
+
 ## Порядок работ
 
+> Пункты 1, 3, 10 и 11 закрыты. Осталось:
+
 1. Пункт 2 — сообщения вообще не работают, это блокер.
-2. Пункт 3 — `/list` и `/status` бесполезны без persistence.
-3. Пункт 4 — кнопки молчат.
-4. Пункты 5 и 6 вместе (один файл `commands.ts`, один протокол).
-5. Пункт 7 — решить судьбу `media.ts`.
-6. Пункт 8 — убрать латентный краш.
-7. Пункт 9 — доки и коммит.
+2. Пункт 4 — кнопки молчат.
+3. Пункты 5 и 6 вместе (один файл `commands.ts`, один протокол).
+4. Пункт 7 — решить судьбу `media.ts`.
+5. Пункт 8 — убрать латентный краш.
+6. Пункт 9 — доки и коммит.
 
 ---
 

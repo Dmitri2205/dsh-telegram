@@ -159,6 +159,23 @@ interface RouterContext {
     };
     /** Optional agent default model service (may be absent). */
     agentDefaultModel?: AgentDefaultModel;
+    /** Optional live session store (may be absent). */
+    sessions?: {
+        get?(sessionId: string): unknown;
+        list?(): unknown[];
+    };
+    /** Optional live projection registry (may be absent). */
+    sessionProjections?: {
+        cachedSnapshot?(session: unknown, keys?: readonly string[]): {
+            values?: Record<string, unknown>;
+        } | undefined;
+    };
+    /** Optional durable projection cache for stored sessions (may be absent). */
+    sessionProjectionCache?: {
+        cachedSnapshot?(header: unknown, keys?: readonly string[]): {
+            values?: Record<string, unknown>;
+        } | undefined;
+    };
     /** Alternative way to access services that may not be in inject. */
     get?(key: string): unknown;
 }

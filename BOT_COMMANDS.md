@@ -232,8 +232,8 @@
 **Общее количество тестов:** 91 (все проходят)
 
 **Проверки:**
-- `npx tsc --noEmit` — ✅
-- `npm test` — 91/91 passed
+- `tsc -p tsconfig.json` — ✅
+- `tsx --test test/*.test.ts` — 112/112 passed
 - `node build.js` — ✅
 
 ### Граф зависимостей (актуальный)

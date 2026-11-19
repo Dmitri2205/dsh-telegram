@@ -373,13 +373,32 @@ export function apply(
   // 3. Create TelegramBot instance and the router
   const bot = new TelegramBot(botToken, { proxyUrl: config.proxy });
   botInstance = bot;
+  // Some services are mounted by async providers that may become ACTIVE after
+  // this plugin's apply() runs (sessionPersistence awaits its backend fiber).
+  // Reading them once here would freeze `undefined` for the process lifetime,
+  // so resolve them lazily on every property access instead.
+  const lazyService = (name: string): any => new Proxy({}, {
+    get(_target, prop) {
+      let svc: any;
+      try { svc = ctx.get?.(name) } catch { svc = undefined }
+      const value = svc?.[prop];
+      return typeof value === "function" ? value.bind(svc) : value;
+    },
+    has() {
+      try { return !!ctx.get?.(name) } catch { return false }
+    },
+  });
+
   const router = createRouter(bot, {
     agents: ctx.agents,
     logger,
     cwd: process.cwd(),
     workspaceRegistry: ctx.workspaceRegistry,
-    sessionPersistence: ctx.get?.("session-persistence-jsonl") as any,
-    agentDefaultModel: ctx.get?.("agentDefaultModel") as any,
+    sessionPersistence: lazyService("sessionPersistence"),
+    agentDefaultModel: lazyService("agentDefaultModel"),
+    sessions: lazyService("sessions"),
+    sessionProjections: lazyService("sessionProjections"),
+    sessionProjectionCache: lazyService("sessionProjectionCache"),
   });
 
   // Durable session events are how the assistant's answer reaches us: the loop

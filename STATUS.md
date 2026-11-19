@@ -1,8 +1,11 @@
 # dsh-telegram — текущее состояние и следующие шаги
 
 Дата: 2026-11-10 | Боевой сценарий #2 проверен: 2026-11-16 | Синхронизация правки: 2026-11-16
+| `/list` починен и проверен в бою: 2026-11-19
+| `/list` — только живые сессии, заголовок + дата, без id: 2026-11-19
 
 Утверждённый план проекта лежит в [PLAN.md](./PLAN.md).
+Правила для агентов (в т.ч. грабли Cordis и сборка без `npx`) — в [AGENTS.md](./AGENTS.md), разделы 7–8.
 
 ## Состояние проекта (кратко)
 
@@ -10,17 +13,38 @@
 
 - Конфигурация: `package.json`, `tsconfig.json`, `tsconfig.test.json`, `cordis.patch.yml`, `locale/en.json`, `icon.svg`, `README.md`
 - Код `src/server/`: `telegram.ts`, `webhook.ts`, `router.ts`, `media.ts`, `commands.ts`, `index.ts`, `state.ts`, `proxy.ts`
-- Тесты `test/`: `helper.ts`, `telegram.test.ts`, `webhook.test.ts`, `router.test.ts`, `media.test.ts`, `commands.test.ts`
-- Тест-раннер: `tsx --test test/**/*.test.ts`
+- Тесты `test/`: `helper.ts`, `telegram.test.ts`, `webhook.test.ts`, `router.test.ts`, `media.test.ts`, `commands.test.ts`, `list.test.ts`, `new.test.ts`, `stop.test.ts`, `status.test.ts`, `state.test.ts`, `workspaces.test.ts`
+- Тест-раннер: `/home/dmitry/deepseek-harness/node_modules/.bin/tsx --test test/*.test.ts`
 
-Проверка: `npx tsc --noEmit` — 0 ошибок. `tsx --test` — 91/91 тестов прошли (0 failed), 0 suites. `node build.js` — сборка успешна.
+Проверка (19.11.2026): `tsc -p tsconfig.json` — эмит в `lib/`, остались только средовые ошибки `TS2591`/`TS7006`
+(нет `@types/node`). `tsx --test` — **112/112** (0 failed). `npx`/`npm` в этом окружении падают с EROFS —
+используй бинарники харнесса (см. `AGENTS.md`, раздел 8).
 
 ## Причины падений тестов (рантайм)
 
-Тесты проходят (91/91), но при боевом запуске выявлены дефекты:
+Тесты проходят (112/112), но при боевом запуске выявлены дефекты:
 
-Закрытые пункты: 1, 3, 10 ✅ (см. [FIXES.md](./FIXES.md)).  
+Закрытые пункты: 1, 3, 10, 11 ✅ (см. [FIXES.md](./FIXES.md)).  
 Открытые пункты: 2, 4, 5, 6, 7, 8, 9 ❌ (см. [FIXES.md](./FIXES.md)).
+
+## 19.11.2026 — что было сделано
+
+- `/list` и `/status` снова видят persistence. Причин было две: неверный ключ сервиса
+  (`session-persistence-jsonl` вместо `sessionPersistence`) и чтение сервиса один раз в `apply()`
+  до того, как асинхронный бэкенд станет активным. Вторая причина и была основной.
+- Решение: ленивый `Proxy` в `src/server/index.ts:376-397` резолвит `sessionPersistence` и
+  `agentDefaultModel` при каждом обращении. Ошибка `list()` теперь пишется в `logger.warn`.
+- Живая проверка: маркеры в файл дали `rawCount: 217`, `filteredCount: 84`; `/list` в Telegram
+  вернул 84 сессии. Маркеры после проверки удалены.
+- `/list` переделан по запросу: вывод — только «живые» (не архивные) сессии воркспейса,
+  без id и числа событий, строка `<▶|  >dd.MM HH:MM · <заголовок>`, новые сверху, лимит 10.
+  Источник — `workspace.sessionIds` минус `global.archivedSessionIds` (реестр `workspace.json`),
+  а не файлы на диске и не память процесса (этот вариант давал пустой список после рестарта).
+  Для этого воркспейса 27 привязанных − 8 архивных = 19 живых. Сборка готова, нужен рестарт.
+- Тесты: `test/list.test.ts` — 22 теста (реестр/архив, сортировка ms и ISO, маркеры, точный
+  формат без id, цепочка заголовков live projection → durable cache → flat → «Без названия»,
+  падающие сервисы, отсутствие persistence, лимит и «…и ещё N»); всего 112/112.
+- Подробный разбор и грабли — `FIXES.md` пункт 11 и `AGENTS.md` раздел 7.
 
 ## План следующих шагов
 
@@ -44,7 +68,7 @@
    - Проверку secret-token делать до тяжёлого парсинга; неизвестные типы update игнорировать.
 
 5. Исправить `commands.ts`:
-   - `/list` — не обрезать `sessionId` (или синхронизировать тест с форматом).
+   - ~~`/list` — не обрезать `sessionId`~~ — снято 19.11.2026: id намеренно не выводится, в списке только заголовок и дата.
    - Убрать дублирующий `case "start": case "start":`.
    - Убедиться, что вызывающий код реально шлёт `text` через `bot.sendText`.
 

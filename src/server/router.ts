@@ -4,7 +4,7 @@
  */
 import { randomUUID } from "node:crypto";
 import { handleCommand, parseCommand } from "./commands.js";
-import { listWorkspaces, resolveWorkspace, getWorkspaceRegistry } from "./workspaces.js";
+import { listWorkspaces, resolveWorkspace, getWorkspaceRegistry, findWorkspaceByPath } from "./workspaces.js";
 import { loadChatState, saveChatState } from "./state.js";
 
 /** Message the agent loop accepts through `agent.followup()`. */
@@ -128,8 +128,55 @@ interface RouterContext {
   };
   /** Optional agent default model service (may be absent). */
   agentDefaultModel?: AgentDefaultModel;
+  /** Optional live session store (may be absent). */
+  sessions?: {
+    get?(sessionId: string): unknown;
+    list?(): unknown[];
+  };
+  /** Optional live projection registry (may be absent). */
+  sessionProjections?: {
+    cachedSnapshot?(session: unknown, keys?: readonly string[]): { values?: Record<string, unknown> } | undefined;
+  };
+  /** Optional durable projection cache for stored sessions (may be absent). */
+  sessionProjectionCache?: {
+    cachedSnapshot?(header: unknown, keys?: readonly string[]): { values?: Record<string, unknown> } | undefined;
+  };
   /** Alternative way to access services that may not be in inject. */
   get?(key: string): unknown;
+}
+
+/** Read the `title` value out of a projection block, if it is a usable string. */
+function projectionTitle(block: { values?: Record<string, unknown> } | undefined): string | undefined {
+  const value = block?.values?.title;
+  return typeof value === "string" && value.trim().length > 0 ? value : undefined;
+}
+
+/**
+ * Resolve a human title for one workspace session.
+ *
+ * Order: live in-memory projection cells (freshest, no fold) → durable
+ * projection cache keyed by the session header (zero-I/O hint) → the plain
+ * `title` field of a persistence entry, if it has one.
+ */
+function resolveSessionTitle(ctx: RouterContext, session: PersistedSession): string | undefined {
+  try {
+    const live = ctx.sessions?.get?.(session.sessionId);
+    if (live) {
+      const liveTitle = projectionTitle(ctx.sessionProjections?.cachedSnapshot?.(live, ["title"]));
+      if (liveTitle) return liveTitle;
+    }
+  } catch {
+    // optional service misbehaved — fall through to the durable cache
+  }
+  try {
+    if (session.header) {
+      const cachedTitle = projectionTitle(ctx.sessionProjectionCache?.cachedSnapshot?.(session.header, ["title"]));
+      if (cachedTitle) return cachedTitle;
+    }
+  } catch {
+    // ignored
+  }
+  return typeof session.title === "string" && session.title.trim().length > 0 ? session.title : undefined;
 }
 
 /** Resolve agentOptions from the global default model service. */
@@ -364,50 +411,75 @@ export function createRouter(
         return { text: "⚠️ Сначала выберите воркспейс командой /ws." };
       }
 
-      // Get persisted sessions filtered by workspace cwd
-      let persisted: PersistedSession[] = [];
-      if (!ctx.sessionPersistence) {
-        ctx.logger.warn("sessionPersistence not available — /list and /status will return empty data");
-      } else {
-        try {
-          const listFn = ctx.sessionPersistence.list;
-          if (typeof listFn === "function") {
-            persisted = await listFn(workspacePath);
-          }
-        } catch {
-          // persistence may not be available — fall back to in-memory
-        }
+      const workspace = findWorkspaceByPath(ctx, workspacePath);
+      if (!workspace) {
+        return { text: `⚠️ Воркспейс "${workspacePath}" не найден в реестре. Выберите заново через /ws.` };
       }
 
-      // Normalize runtime snapshots ({header,...}) and plain entries to PersistedSession
-      const mapped = (persisted ?? []).map((s) => {
-        const header = typeof s === "object" && s !== null && s.header ? s.header : undefined;
-        const base = (header ? { sessionId: header.id, createdAt: header.createdAt, cwd: header.cwd } : {});
-        return { ...base, ...(typeof s === "object" && s !== null ? s : {}) };
-      });
-      const filtered = (mapped as PersistedSession[]).filter((s) => s.cwd === workspacePath);
+      // "Живые" = прикреплённые к воркспейсу и не помеченные в архиве.
+      const registry = getWorkspaceRegistry(ctx) as { archivedSessionIds?: readonly string[] } | undefined;
+      const archived = new Set<string>(Array.isArray(registry?.archivedSessionIds) ? registry!.archivedSessionIds! : []);
+      const allIds = Array.isArray(workspace.sessionIds) ? workspace.sessionIds : [];
+      const liveIds = allIds.filter((id) => typeof id === "string" && !archived.has(id));
 
+      if (liveIds.length === 0) {
+        const archivedCount = allIds.length - liveIds.length;
+        return {
+          text: archivedCount > 0
+            ? `📂 В "${workspacePath}" нет живых сессий — все ${archivedCount} в архиве.`
+            : `📂 Живых сессий в "${workspacePath}" не найдено.`,
+        };
+      }
 
+      // Метаданные (createdAt) — из сохранённых заголовков; если сервис недоступен,
+      // список всё равно строится по id из реестра.
+      let persisted: PersistedSession[] = [];
+      if (ctx.sessionPersistence) {
+        try {
+          const listFn = ctx.sessionPersistence.list;
+          if (typeof listFn === "function") persisted = await listFn();
+        } catch (e) {
+          ctx.logger.warn(`sessionPersistence.list() failed: ${e instanceof Error ? `${e.name}: ${e.message}` : String(e)}`);
+        }
+      }
+      const byId = new Map<string, PersistedSession>();
+      for (const raw of persisted ?? []) {
+        if (!raw || typeof raw !== "object") continue;
+        const header = (raw as { header?: { id?: unknown; cwd?: unknown; createdAt?: unknown } }).header;
+        const sessionId = header?.id ?? (raw as { sessionId?: unknown }).sessionId;
+        if (typeof sessionId !== "string") continue;
+        byId.set(sessionId, {
+          ...(header ? { createdAt: header.createdAt as PersistedSession["createdAt"], cwd: header.cwd as string } : {}),
+          ...(raw as object),
+          sessionId,
+          header: header as PersistedSession["header"],
+        } as PersistedSession);
+      }
+
+      // Runtime snapshots carry epoch-ms createdAt; be tolerant of ISO strings too.
+      const timestampOf = (createdAt: unknown): number => {
+        if (typeof createdAt === "number" && Number.isFinite(createdAt)) return createdAt;
+        const parsed = typeof createdAt === "string" ? Date.parse(createdAt) : Number.NaN;
+        return Number.isFinite(parsed) ? parsed : 0;
+      };
+      const sessions = liveIds
+        .map((id) => byId.get(id) ?? ({ sessionId: id } as PersistedSession))
+        .sort((a, b) => timestampOf(b.createdAt) - timestampOf(a.createdAt));
 
       const currentSessionId = chatToSession.get(chatId) ?? state.sessionId;
       const LIMIT = 10;
-      const shown = filtered.slice(0, LIMIT);
-      const remaining = Math.max(0, filtered.length - LIMIT);
+      const shown = sessions.slice(0, LIMIT);
+      const remaining = Math.max(0, sessions.length - LIMIT);
 
-      if (shown.length === 0) {
-        return { text: `📂 Сессий в "${workspacePath}" не найдено.` };
-      }
-
-      const lines = shown.map((s) => {
-        const marker = s.sessionId === currentSessionId ? "▶ " : "  ";
-        const shortId = s.sessionId;
-        const created = new Date(s.createdAt);
-        const timeStr = formatTime(created);
-        const eventInfo = s.eventCount != null ? ` (${s.eventCount} events)` : "";
-        return `${marker}${shortId}  ${timeStr}${eventInfo}`;
+      const lines = shown.map((session) => {
+        const marker = session.sessionId === currentSessionId ? "▶ " : "  ";
+        const timestamp = timestampOf(session.createdAt);
+        const timeStr = timestamp > 0 ? formatListTime(new Date(timestamp)) : "—";
+        const title = resolveSessionTitle(ctx, session) ?? "Без названия";
+        return `${marker}${timeStr} · ${title}`;
       });
 
-      let text = `📂 Сессии в "${workspacePath}" (${filtered.length}):\n\n${lines.join("\n")}`;
+      let text = `📂 Живые сессии в "${workspacePath}" (${sessions.length}):\n\n${lines.join("\n")}`;
       if (remaining > 0) {
         text += `\n…и ещё ${remaining}`;
       }
@@ -560,6 +632,13 @@ function formatTime(date: Date): string {
   const h = String(date.getHours()).padStart(2, "0");
   const m = String(date.getMinutes()).padStart(2, "0");
   return `${h}:${m}`;
+}
+
+/** Format one /list timestamp as `dd.MM HH:MM` (local time). */
+function formatListTime(date: Date): string {
+  const d = String(date.getDate()).padStart(2, "0");
+  const mo = String(date.getMonth() + 1).padStart(2, "0");
+  return `${d}.${mo} ${formatTime(date)}`;
 }
 
 /** Format a Duration in minutes and seconds. */
